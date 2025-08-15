@@ -1,0 +1,37 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lanchonete-app
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: lanchonete-app
+  template:
+    metadata:
+      labels:
+        app: lanchonete-app
+    spec:
+      containers:
+        - name: lanchonete-app
+          image: efabio/lanchonete-app:latest
+          ports:
+            - containerPort: 8080
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "200m"
+              memory: "512Mi"
+          env:
+            - name: APP_ENV
+              valueFrom:
+                configMapKeyRef:
+                  name: lanchonete-app-config
+                  key: APP_ENV
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: app-secret
+                  key: DATABASE_URL
