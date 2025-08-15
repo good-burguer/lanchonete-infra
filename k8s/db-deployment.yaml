@@ -14,7 +14,7 @@ spec:
     spec:
       containers:
         - name: lanchonete-db
-          image: efabio/lanchonete-db:latest
+          image: codecrafterfiap/lanchonete-db:latest
           ports:
             - containerPort: 5432
           env:
