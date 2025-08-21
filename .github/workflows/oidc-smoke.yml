@@ -8,12 +8,22 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: |
-          echo "GITHUB_REF=$GITHUB_REF"
-          echo "GITHUB_SHA=$GITHUB_SHA"
+
+      - name: Dump OIDC claims (aud/sub)
+        id: oidc
+        run: |
+          # pega o id-token com audience sts.amazonaws.com
+          TOKEN_URL="$ACTIONS_ID_TOKEN_REQUEST_URL&audience=sts.amazonaws.com"
+          RAW=$(curl -sSL -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$TOKEN_URL")
+          IDTOKEN=$(echo "$RAW" | jq -r '.value')
+          # mostra o payload (2ª parte do JWT)
+          PAYLOAD=$(echo "$IDTOKEN" | cut -d'.' -f2 | base64 -d 2>/dev/null || true)
+          echo "$PAYLOAD" | jq '{aud, sub, repository, ref}' || echo "$PAYLOAD"
+      
       - uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_TERRAFORM }}
           aws-region: ${{ vars.AWS_REGION }}
+
       - name: STS GetCallerIdentity
         run: aws sts get-caller-identity
