@@ -1,0 +1,36 @@
+name: bootstrap-state
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'bootstrap/state/**'
+permissions:
+  id-token: write
+  contents: read
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: bootstrap/state
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TERRAFORM }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Terraform Init/Plan
+        run: |
+          terraform init
+          terraform fmt -check
+          terraform validate
+          terraform plan -out tfplan \
+            -var="aws_region=${{ vars.AWS_REGION }}" \
+            -var="tf_state_bucket=good-burguer-tf-state" \
+            -var="tf_lock_table=good-burguer-tf-lock"
+
+      - name: Terraform Apply
+        if: github.ref == 'refs/heads/main'
+        run: terraform apply -auto-approve tfplan
