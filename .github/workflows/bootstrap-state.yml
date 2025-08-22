@@ -24,7 +24,7 @@ jobs:
       - name: Terraform Init/Plan
         run: |
           terraform init
-          terraform fmt -check
+          terraform fmt -recursive
           terraform validate
           terraform plan -out tfplan \
             -var="aws_region=${{ vars.AWS_REGION }}" \
