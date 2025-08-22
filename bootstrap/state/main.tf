@@ -65,7 +65,7 @@ resource "aws_s3_bucket_policy" "tf_state_tls_only" {
 # DynamoDB para lock do Terraform
 resource "aws_dynamodb_table" "tf_lock" {
   name         = var.tf_lock_table
-  billing_mode = "PAYPERREQUEST"
+  billing_mode = "PAY_PER_REQUEST"
   hash_key     = "LockID"
   attribute {
     name = "LockID"
