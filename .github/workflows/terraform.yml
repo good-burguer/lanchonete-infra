@@ -1,0 +1,51 @@
+name: terraform
+
+on:
+  pull_request:
+    branches: [ "main" ]
+    paths: [ "environments/dev/**", ".github/workflows/terraform.yml" ]
+  push:
+    branches: [ "main" ]
+    paths:  [ "environments/dev/**", ".github/workflows/terraform.yml" ]
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  terraform:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: environments/dev
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TERRAFORM }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Terraform Init
+        run: terraform init -input=false
+
+      - name: Terraform Format
+        run: terraform fmt -recursive
+
+      - name: Terraform Validate
+        run: terraform validate
+
+      - name: Terraform Plan
+        if: github.event_name == 'pull_request'
+        run: terraform plan -input=false \
+          -var="aws_region=${{ vars.AWS_REGION }}" \
+          -var="tf_state_bucket=${{ vars.TF_STATE_BUCKET }}" \
+          -var="tf_lock_table=${{ vars.TF_LOCK_TABLE }}"
+
+      - name: Terraform Apply
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        run: terraform apply -auto-approve \
+          -var="aws_region=${{ vars.AWS_REGION }}" \
+          -var="tf_state_bucket=${{ vars.TF_STATE_BUCKET }}" \
+          -var="tf_lock_table=${{ vars.TF_LOCK_TABLE }}"
