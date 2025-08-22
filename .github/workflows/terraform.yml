@@ -44,14 +44,8 @@ jobs:
 
       - name: Terraform Plan
         if: github.event_name == 'pull_request'
-        run: terraform plan -input=false \
-          -var="aws_region=${{ vars.AWS_REGION }}" \
-          -var="tf_state_bucket=${{ vars.TF_STATE_BUCKET }}" \
-          -var="tf_lock_table=${{ vars.TF_LOCK_TABLE }}"
+        run: terraform plan -input=false -var="aws_region=${{ vars.AWS_REGION }}" -var="tf_state_bucket=${{ vars.TF_STATE_BUCKET }}" -var="tf_lock_table=${{ vars.TF_LOCK_TABLE }}"
 
       - name: Terraform Apply
         if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-        run: terraform apply -auto-approve \
-          -var="aws_region=${{ vars.AWS_REGION }}" \
-          -var="tf_state_bucket=${{ vars.TF_STATE_BUCKET }}" \
-          -var="tf_lock_table=${{ vars.TF_LOCK_TABLE }}"
+        run: terraform apply -auto-approve -var="aws_region=${{ vars.AWS_REGION }}" -var="tf_state_bucket=${{ vars.TF_STATE_BUCKET }}" -var="tf_lock_table=${{ vars.TF_LOCK_TABLE }}"
