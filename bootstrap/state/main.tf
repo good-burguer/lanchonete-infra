@@ -67,7 +67,10 @@ resource "aws_dynamodb_table" "tf_lock" {
   name         = var.tf_lock_table
   billing_mode = "PAYPERREQUEST"
   hash_key     = "LockID"
-  attribute { name = "LockID"; type = "S" }
+  attribute {
+    name = "LockID"
+    type = "S"
+  }
   tags = {
     Project = "Good-Burguer"
     Component = "TerraformLock"

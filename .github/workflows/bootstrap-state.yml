@@ -28,8 +28,8 @@ jobs:
           terraform validate
           terraform plan -out tfplan \
             -var="aws_region=${{ vars.AWS_REGION }}" \
-            -var="tf_state_bucket=good-burguer-tf-state" \
-            -var="tf_lock_table=good-burguer-tf-lock"
+            -var="tf_state_bucket=${{ vars.TF_STATE_BUCKET }}" \
+            -var="tf_lock_table=${{ vars.TF_LOCK_TABLE }}"
 
       - name: Terraform Apply
         if: github.ref == 'refs/heads/main'
