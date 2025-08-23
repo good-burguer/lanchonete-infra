@@ -2,6 +2,7 @@ terraform {
   required_version = ">= 1.6.0"
   required_providers {
     aws = { source = "hashicorp/aws", version = "~> 5.0" }
+    tls = { source = "hashicorp/tls", version = "~> 4.0" }
   }
 }
 provider "aws" { region = var.aws_region }
@@ -123,4 +124,68 @@ resource "aws_route_table_association" "private_assoc" {
   count          = length(aws_subnet.private)
   subnet_id      = aws_subnet.private[count.index].id
   route_table_id = aws_route_table.private.id
+}
+# Role do Cluster EKS
+data "aws_iam_policy_document" "eks_cluster_assume" {
+  statement {
+    actions = ["sts:AssumeRole"]
+    principals {
+      type        = "Service"
+      identifiers = ["eks.amazonaws.com"]
+    }
+  }
+}
+
+resource "aws_iam_role" "eks_cluster" {
+  name               = "gb-dev-eks-cluster-role"
+  assume_role_policy = data.aws_iam_policy_document.eks_cluster_assume.json
+  tags = {
+    Project = "Good-Burger"
+    Env     = "dev"
+  }
+}
+
+resource "aws_iam_role_policy_attachment" "eks_cluster_AmazonEKSClusterPolicy" {
+  role       = aws_iam_role.eks_cluster.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEKSClusterPolicy"
+}
+
+resource "aws_iam_role_policy_attachment" "eks_cluster_AmazonEKS_VPCResourceController" {
+  role       = aws_iam_role.eks_cluster.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEKS_VPCResourceController"
+}
+
+# Role dos Nós (Node Group)
+data "aws_iam_policy_document" "eks_node_assume" {
+  statement {
+    actions = ["sts:AssumeRole"]
+    principals {
+      type        = "Service"
+      identifiers = ["ec2.amazonaws.com"]
+    }
+  }
+}
+
+resource "aws_iam_role" "eks_node" {
+  name               = "gb-dev-eks-node-role"
+  assume_role_policy = data.aws_iam_policy_document.eks_node_assume.json
+  tags = {
+    Project = "Good-Burger"
+    Env     = "dev"
+  }
+}
+
+resource "aws_iam_role_policy_attachment" "node_AmazonEKSWorkerNodePolicy" {
+  role       = aws_iam_role.eks_node.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy"
+}
+
+resource "aws_iam_role_policy_attachment" "node_AmazonEC2ContainerRegistryReadOnly" {
+  role       = aws_iam_role.eks_node.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
+}
+
+resource "aws_iam_role_policy_attachment" "node_AmazonEKS_CNI_Policy" {
+  role       = aws_iam_role.eks_node.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy"
 }
