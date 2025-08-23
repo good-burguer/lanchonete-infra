@@ -189,3 +189,52 @@ resource "aws_iam_role_policy_attachment" "node_AmazonEKS_CNI_Policy" {
   role       = aws_iam_role.eks_node.name
   policy_arn = "arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy"
 }
+# Cluster EKS
+resource "aws_eks_cluster" "this" {
+  name     = var.eks_cluster_name
+  role_arn = aws_iam_role.eks_cluster.arn
+  version  = var.eks_version
+
+  vpc_config {
+    subnet_ids              = [for s in aws_subnet.private : s.id]
+    endpoint_private_access = true
+    endpoint_public_access  = true  # facilita kubectl no começo; podemos restringir depois
+  }
+
+  tags = {
+    Project = "Good-Burger"
+    Env     = "dev"
+  }
+
+  depends_on = [
+    aws_iam_role_policy_attachment.eks_cluster_AmazonEKSClusterPolicy,
+    aws_iam_role_policy_attachment.eks_cluster_AmazonEKS_VPCResourceController
+  ]
+}
+resource "aws_eks_node_group" "default" {
+  cluster_name    = aws_eks_cluster.this.name
+  node_group_name = "${var.eks_cluster_name}-ng"
+  node_role_arn   = aws_iam_role.eks_node.arn
+  subnet_ids      = [for s in aws_subnet.private : s.id]
+
+  scaling_config {
+    desired_size = var.eks_desired_size
+    min_size     = var.eks_min_size
+    max_size     = var.eks_max_size
+  }
+
+  instance_types = var.eks_instance_types
+  disk_size      = 20
+
+  tags = {
+    Project = "Good-Burger"
+    Env     = "dev"
+  }
+
+  depends_on = [
+    aws_eks_cluster.this,
+    aws_iam_role_policy_attachment.node_AmazonEKSWorkerNodePolicy,
+    aws_iam_role_policy_attachment.node_AmazonEC2ContainerRegistryReadOnly,
+    aws_iam_role_policy_attachment.node_AmazonEKS_CNI_Policy
+  ]
+}
