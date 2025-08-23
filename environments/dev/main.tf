@@ -152,7 +152,7 @@ resource "aws_iam_role_policy_attachment" "eks_cluster_AmazonEKSClusterPolicy" {
 
 resource "aws_iam_role_policy_attachment" "eks_cluster_AmazonEKS_VPCResourceController" {
   role       = aws_iam_role.eks_cluster.name
-  policy_arn = "arn:aws:iam::aws:policy/AmazonEKS_VPCResourceController"
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEKSVPCResourceController"
 }
 
 # Role dos Nós (Node Group)
