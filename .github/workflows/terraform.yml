@@ -21,6 +21,14 @@ jobs:
         working-directory: environments/dev
     steps:
       - uses: actions/checkout@v4
+      - name: Debug tree
+        run: |
+          pwd
+          git rev-parse --short HEAD
+          ls -la
+          ls -la environments/dev
+          echo "----- variables.tf -----"
+          sed -n '1,160p' environments/dev/variables.tf || true
       - uses: hashicorp/setup-terraform@v3
       - uses: aws-actions/configure-aws-credentials@v4
         with:
