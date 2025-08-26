@@ -21,7 +21,7 @@ resource "aws_vpc" "gb" {
   enable_dns_hostnames = true
   tags = {
     Name    = "gb-dev-vpc"
-    Project = "Good-Burguer"
+    Project = "Good-Burger"
     Env     = "dev"
   }
 }
@@ -31,7 +31,7 @@ resource "aws_internet_gateway" "igw" {
   vpc_id = aws_vpc.gb.id
   tags = {
     Name    = "gb-dev-igw"
-    Project = "Good-Burguer"
+    Project = "Good-Burger"
     Env     = "dev"
   }
 }
@@ -45,7 +45,7 @@ resource "aws_subnet" "public" {
   map_public_ip_on_launch = true
   tags = {
     Name    = "gb-dev-public-${count.index + 1}"
-    Project = "Good-Burguer"
+    Project = "Good-Burger"
     Env     = "dev"
     Tier    = "public"
   }
@@ -59,7 +59,7 @@ resource "aws_subnet" "private" {
   availability_zone = data.aws_availability_zones.available.names[count.index]
   tags = {
     Name    = "gb-dev-private-${count.index + 1}"
-    Project = "Good-Burguer"
+    Project = "Good-Burger"
     Env     = "dev"
     Tier    = "private"
   }
@@ -74,7 +74,7 @@ resource "aws_route_table" "public" {
   }
   tags = {
     Name    = "gb-dev-public-rt"
-    Project = "Good-Burguer"
+    Project = "Good-Burger"
     Env     = "dev"
   }
 }
@@ -90,7 +90,7 @@ resource "aws_eip" "nat" {
   domain = "vpc"
   tags = {
     Name    = "gb-dev-nat-eip"
-    Project = "Good-Burguer"
+    Project = "Good-Burger"
     Env     = "dev"
   }
 }
@@ -100,7 +100,7 @@ resource "aws_nat_gateway" "nat" {
   subnet_id     = aws_subnet.public[0].id
   tags = {
     Name    = "gb-dev-nat"
-    Project = "Good-Burguer"
+    Project = "Good-Burger"
     Env     = "dev"
   }
   depends_on = [aws_internet_gateway.igw]
@@ -115,7 +115,7 @@ resource "aws_route_table" "private" {
   }
   tags = {
     Name    = "gb-dev-private-rt"
-    Project = "Good-Burguer"
+    Project = "Good-Burger"
     Env     = "dev"
   }
 }
@@ -237,4 +237,83 @@ resource "aws_eks_node_group" "default" {
     aws_iam_role_policy_attachment.node_AmazonEC2ContainerRegistryReadOnly,
     aws_iam_role_policy_attachment.node_AmazonEKS_CNI_Policy
   ]
+}
+
+data "aws_eks_cluster" "this" {
+  name = var.eks_cluster_name
+}
+
+data "tls_certificate" "eks_oidc" {
+  url = data.aws_eks_cluster.this.identity[0].oidc[0].issuer
+}
+
+resource "aws_iam_openid_connect_provider" "eks" {
+  url             = data.aws_eks_cluster.this.identity[0].oidc[0].issuer
+  client_id_list  = ["sts.amazonaws.com"]
+  thumbprint_list = [data.tls_certificate.eks_oidc.certificates[0].sha1_fingerprint]
+}
+
+# Puxa o ARN do Secret do RDS do state do repo database
+data "terraform_remote_state" "database" {
+  backend = "s3"
+  config = {
+    bucket  = var.tf_state_bucket
+    key     = "database/terraform.tfstate"
+    region  = var.aws_region
+    encrypt = true
+  }
+}
+
+# Locais para amarrar o IRSA ao ServiceAccount da app
+locals {
+  app_namespace     = "app"
+  app_sa_name       = "lanchonete-app-sa"
+  rds_secret_arn    = data.terraform_remote_state.database.outputs.rds_secret_arn
+  oidc_provider_url = replace(data.aws_eks_cluster.this.identity[0].oidc[0].issuer, "https://", "")
+}
+
+# Policy mínima: ler apenas o Secret do RDS
+data "aws_iam_policy_document" "app_secrets" {
+  statement {
+    sid       = "ReadRdsSecret"
+    actions   = ["secretsmanager:GetSecretValue"]
+    resources = [local.rds_secret_arn]
+  }
+}
+
+resource "aws_iam_policy" "app_secrets" {
+  name   = "gb-dev-app-read-rds-secret"
+  policy = data.aws_iam_policy_document.app_secrets.json
+}
+
+# Role IRSA: só o SA app/lanchonete-app-sa pode assumir
+data "aws_iam_policy_document" "app_irsa_trust" {
+  statement {
+    actions = ["sts:AssumeRoleWithWebIdentity"]
+    principals {
+      type        = "Federated"
+      identifiers = [aws_iam_openid_connect_provider.eks.arn]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "${local.oidc_provider_url}:aud"
+      values   = ["sts.amazonaws.com"]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "${local.oidc_provider_url}:sub"
+      values   = ["system:serviceaccount:${local.app_namespace}:${local.app_sa_name}"]
+    }
+  }
+}
+
+resource "aws_iam_role" "app_irsa" {
+  name               = "gb-dev-eks-app-secrets"
+  assume_role_policy = data.aws_iam_policy_document.app_irsa_trust.json
+  tags = { Project = "Good-Burger", Env = "dev" }
+}
+
+resource "aws_iam_role_policy_attachment" "app_irsa_attach" {
+  role       = aws_iam_role.app_irsa.name
+  policy_arn = aws_iam_policy.app_secrets.arn
 }
