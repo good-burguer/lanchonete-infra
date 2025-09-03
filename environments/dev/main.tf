@@ -198,7 +198,7 @@ resource "aws_eks_cluster" "this" {
   vpc_config {
     subnet_ids              = [for s in aws_subnet.private : s.id]
     endpoint_private_access = true
-    endpoint_public_access  = true  # facilita kubectl no começo; podemos restringir depois
+    endpoint_public_access  = true # facilita kubectl no começo; podemos restringir depois
   }
 
   tags = {
@@ -216,6 +216,7 @@ resource "aws_eks_node_group" "default" {
   node_group_name = "${var.eks_cluster_name}-ng"
   node_role_arn   = aws_iam_role.eks_node.arn
   subnet_ids      = [for s in aws_subnet.private : s.id]
+  version         = var.eks_version # <- garante que os nós sobem na mesma versão do cluster
 
   scaling_config {
     desired_size = var.eks_desired_size
@@ -239,18 +240,15 @@ resource "aws_eks_node_group" "default" {
   ]
 }
 
-data "aws_eks_cluster" "this" {
-  name = var.eks_cluster_name
-}
-
 data "tls_certificate" "eks_oidc" {
-  url = data.aws_eks_cluster.this.identity[0].oidc[0].issuer
+  url = aws_eks_cluster.this.identity[0].oidc[0].issuer
 }
 
 resource "aws_iam_openid_connect_provider" "eks" {
-  url             = data.aws_eks_cluster.this.identity[0].oidc[0].issuer
+  url             = aws_eks_cluster.this.identity[0].oidc[0].issuer
   client_id_list  = ["sts.amazonaws.com"]
   thumbprint_list = [data.tls_certificate.eks_oidc.certificates[0].sha1_fingerprint]
+  depends_on      = [aws_eks_cluster.this]
 }
 
 # Puxa o ARN do Secret do RDS do state do repo database
@@ -269,7 +267,7 @@ locals {
   app_namespace     = "app"
   app_sa_name       = "lanchonete-app-sa"
   rds_secret_arn    = data.terraform_remote_state.database.outputs.rds_secret_arn
-  oidc_provider_url = replace(data.aws_eks_cluster.this.identity[0].oidc[0].issuer, "https://", "")
+  oidc_provider_url = replace(aws_eks_cluster.this.identity[0].oidc[0].issuer, "https://", "")
 }
 
 # Policy mínima: ler apenas o Secret do RDS
@@ -310,7 +308,7 @@ data "aws_iam_policy_document" "app_irsa_trust" {
 resource "aws_iam_role" "app_irsa" {
   name               = "gb-dev-eks-app-secrets"
   assume_role_policy = data.aws_iam_policy_document.app_irsa_trust.json
-  tags = { Project = "Good-Burger", Env = "dev" }
+  tags               = { Project = "Good-Burger", Env = "dev" }
 }
 
 resource "aws_iam_role_policy_attachment" "app_irsa_attach" {

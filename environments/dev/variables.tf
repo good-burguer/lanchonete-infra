@@ -19,7 +19,7 @@ variable "eks_cluster_name" {
 
 variable "eks_version" {
   type    = string
-  default = "1.29"   # fixe major.minor; não fixe patch
+  default = "1.33" # fixe major.minor; não fixe patch
 }
 
 variable "eks_min_size" {
@@ -34,7 +34,7 @@ variable "eks_max_size" {
 
 variable "eks_desired_size" {
   type    = number
-  default = 1
+  default = 2
 }
 
 variable "eks_instance_types" {
