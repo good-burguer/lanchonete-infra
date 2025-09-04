@@ -1,0 +1,42 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lanchonete-app
+  namespace: app
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: lanchonete-app }
+  template:
+    metadata:
+      labels: { app: lanchonete-app }
+    spec:
+      serviceAccountName: lanchonete-app-sa
+      containers:
+        - name: app
+          image: 822619186337.dkr.ecr.us-east-1.amazonaws.com/good-burger/lanchonete-app:dev-amd64
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8080
+          command: ["python"]
+          args: ["-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080"]
+          env:
+            - name: AWS_REGION
+              value: us-east-1
+            - name: DB_SECRET_NAME
+              value: gb/dev/rds/postgres
+            - name: AWS_STS_REGIONAL_ENDPOINTS
+              value: regional
+            - name: AWS_ROLE_ARN
+              value: arn:aws:iam::822619186337:role/gb-dev-eks-app-secrets
+            - name: AWS_WEB_IDENTITY_TOKEN_FILE
+              value: /var/run/secrets/eks.amazonaws.com/serviceaccount/token
+          # (opcional) healthchecks
+          readinessProbe:
+            httpGet: { path: /health/, port: 8080 }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /health/, port: 8080 }
+            initialDelaySeconds: 20
+            periodSeconds: 20
