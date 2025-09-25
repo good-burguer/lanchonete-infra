@@ -340,7 +340,10 @@ data "aws_iam_policy_document" "ecr_push_doc" {
       "ecr:DescribeRepositories",
       "ecr:InitiateLayerUpload",
       "ecr:PutImage",
-      "ecr:UploadLayerPart"
+      "ecr:UploadLayerPart",
+      "ecr:ListImages",
+      "ecr:BatchGetImage",
+      "ecr:GetDownloadUrlForLayer"
     ]
     resources = ["*"] # pode restringir ao repo de ECR específico, se quiser
   }
@@ -393,6 +396,35 @@ resource "aws_iam_role" "gha_lanchonete_app" {
 resource "aws_iam_role_policy_attachment" "gha_lanchonete_app_ecr_attach" {
   role       = aws_iam_role.gha_lanchonete_app.name
   policy_arn = aws_iam_policy.ecr_push.arn
+}
+
+# --- Allow the GitHub Actions role to query the EKS cluster (needed for aws eks update-kubeconfig)
+# Account ID of the current AWS account
+data "aws_caller_identity" "current" {}
+
+# Minimal policy to allow describing the target EKS cluster
+resource "aws_iam_policy" "eks_describe" {
+  name   = "gb-dev-eks-describe"
+  policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Sid    = "AllowDescribeCluster",
+        Effect = "Allow",
+        Action = [
+          "eks:DescribeCluster",
+          "eks:ListClusters"
+        ],
+        Resource = "arn:aws:eks:${var.aws_region}:${data.aws_caller_identity.current.account_id}:cluster/${var.eks_cluster_name}"
+      }
+    ]
+  })
+}
+
+# Attach the policy to the GitHub Actions role
+resource "aws_iam_role_policy_attachment" "gha_lanchonete_app_eks_attach" {
+  role       = aws_iam_role.gha_lanchonete_app.name
+  policy_arn = aws_iam_policy.eks_describe.arn
 }
 
 output "gha_lanchonete_app_role_arn" {
