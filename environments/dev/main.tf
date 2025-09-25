@@ -315,8 +315,6 @@ resource "aws_iam_role_policy_attachment" "app_irsa_attach" {
   role       = aws_iam_role.app_irsa.name
   policy_arn = aws_iam_policy.app_secrets.arn
 }
-<<<<<<< HEAD
-=======
 
 # --- OIDC provider do GitHub (token.actions.githubusercontent.com) ---
 # Crie UMA vez por conta/região. Reutilizado por todas as roles de pipeline.
@@ -432,4 +430,3 @@ resource "aws_iam_role_policy_attachment" "gha_lanchonete_app_eks_attach" {
 output "gha_lanchonete_app_role_arn" {
   value = aws_iam_role.gha_lanchonete_app.arn
 }
->>>>>>> bec26903ae5a448a6970ec51a7f4bd022cfebeb3
