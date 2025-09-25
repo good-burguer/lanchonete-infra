@@ -1,0 +1,33 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: db-migrate
+  namespace: app
+  labels:
+    project: good-burger
+    env: dev
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        job: db-migrate
+    spec:
+      restartPolicy: Never
+      serviceAccountName: lanchonete-app-sa  # usa IRSA p/ ler segredo no Secrets Manager
+      containers:
+        - name: migrator
+          image: 822619186337.dkr.ecr.us-east-1.amazonaws.com/lanchonete-app:1207363-amd64-devschema
+          imagePullPolicy: Always
+          env:
+            - name: DB_SECRET_NAME
+              value: gb/dev/rds/postgres
+            - name: AWS_REGION
+              value: us-east-1
+            - name: AWS_DEFAULT_REGION
+              value: us-east-1
+          command: ["/bin/sh","-lc"]
+          args:
+            - |
+              set -eu
+              alembic upgrade head

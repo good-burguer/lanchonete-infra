@@ -3,10 +3,11 @@ set -euo pipefail
 
 # Desabilita pager do AWS CLI para evitar "(END)"
 export AWS_PAGER=""
-export AWS_REGION="us-east-1"
+export AWS_REGION="${AWS_REGION:-us-east-1}"
 
-TF_BUCKET="good-burger-tf-state"
-TF_LOCK_TABLE="good-burger-tf-lock"
+TF_BUCKET="${TF_BUCKET:-good-burger-tf-state}"
+TF_LOCK_TABLE="${TF_LOCK_TABLE:-good-burger-tf-lock}"
+TF_KEY="${TF_KEY:-infra/terraform.tfstate}"
 
 log() { echo -e "\n==> $*"; }
 
@@ -29,11 +30,11 @@ stop_rds() {
 
 init_tf() {
   log "Inicializando Terraform (backend S3 + DynamoDB)…"
-  terraform init -input=false \
-    -backend-config="bucket=$TF_BUCKET" \
-    -backend-config="key=infra/terraform.tfstate" \
-    -backend-config="region=$AWS_REGION" \
-    -backend-config="dynamodb_table=$TF_LOCK_TABLE" \
+  terraform init -input=false -reconfigure \
+    -backend-config="bucket=${TF_BUCKET}" \
+    -backend-config="key=${TF_KEY}" \
+    -backend-config="region=${AWS_REGION}" \
+    -backend-config="dynamodb_table=${TF_LOCK_TABLE}" \
     -backend-config="encrypt=true" >/dev/null
   log "Terraform init OK."
 }
