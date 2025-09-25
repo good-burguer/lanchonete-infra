@@ -12,9 +12,18 @@ spec:
       labels: { app: lanchonete-app }
     spec:
       serviceAccountName: lanchonete-app-sa
+      automountServiceAccountToken: true
+      volumes:
+        - name: aws-iam-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  audience: sts.amazonaws.com
+                  path: token
+                  expirationSeconds: 86400
       containers:
         - name: app
-          image: 822619186337.dkr.ecr.us-east-1.amazonaws.com/good-burger/lanchonete-app:dev-amd64
+          image: 822619186337.dkr.ecr.us-east-1.amazonaws.com/lanchonete-app:1207363-amd64-fix8
           imagePullPolicy: Always
           ports:
             - containerPort: 8080
@@ -27,10 +36,10 @@ spec:
               value: gb/dev/rds/postgres
             - name: AWS_STS_REGIONAL_ENDPOINTS
               value: regional
-            - name: AWS_ROLE_ARN
-              value: arn:aws:iam::822619186337:role/gb-dev-eks-app-secrets
-            - name: AWS_WEB_IDENTITY_TOKEN_FILE
-              value: /var/run/secrets/eks.amazonaws.com/serviceaccount/token
+          volumeMounts:
+            - name: aws-iam-token
+              mountPath: /var/run/secrets/eks.amazonaws.com/serviceaccount
+              readOnly: true
           # (opcional) healthchecks
           readinessProbe:
             httpGet: { path: /health/, port: 8080 }
