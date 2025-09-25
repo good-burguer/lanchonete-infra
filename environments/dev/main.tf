@@ -315,3 +315,86 @@ resource "aws_iam_role_policy_attachment" "app_irsa_attach" {
   role       = aws_iam_role.app_irsa.name
   policy_arn = aws_iam_policy.app_secrets.arn
 }
+
+# --- OIDC provider do GitHub (token.actions.githubusercontent.com) ---
+# Crie UMA vez por conta/região. Reutilizado por todas as roles de pipeline.
+resource "aws_iam_openid_connect_provider" "github" {
+  url = "https://token.actions.githubusercontent.com"
+
+  client_id_list = ["sts.amazonaws.com"]
+
+  # Thumbprint do GitHub OIDC (raiz do Sigstore)
+  thumbprint_list = ["6938fd4d98bab03faadb97b34396831e3780aea1"]
+
+  tags = { Project = "Good-Burger", Env = "dev" }
+}
+
+data "aws_iam_policy_document" "ecr_push_doc" {
+  statement {
+    sid     = "ECRPushPull"
+    actions = [
+      "ecr:GetAuthorizationToken",
+      "ecr:BatchCheckLayerAvailability",
+      "ecr:CompleteLayerUpload",
+      "ecr:DescribeImages",
+      "ecr:DescribeRepositories",
+      "ecr:InitiateLayerUpload",
+      "ecr:PutImage",
+      "ecr:UploadLayerPart"
+    ]
+    resources = ["*"] # pode restringir ao repo de ECR específico, se quiser
+  }
+
+  # opcional: permitir criar o repo se ainda não existir
+  statement {
+    sid     = "ECRCreateRepoOptional"
+    actions = ["ecr:CreateRepository"]
+    resources = ["*"]
+  }
+}
+
+resource "aws_iam_policy" "ecr_push" {
+  name   = "gb-dev-ecr-push"
+  policy = data.aws_iam_policy_document.ecr_push_doc.json
+}
+
+# Trust policy: GitHub OIDC -> essa role
+data "aws_iam_policy_document" "gha_lanchonete_app_trust" {
+  statement {
+    actions = ["sts:AssumeRoleWithWebIdentity"]
+    principals {
+      type        = "Federated"
+      identifiers = [aws_iam_openid_connect_provider.github.arn]
+    }
+
+    # O GitHub sempre envia aud=sts.amazonaws.com
+    condition {
+      test     = "StringEquals"
+      variable = "token.actions.githubusercontent.com:aud"
+      values   = ["sts.amazonaws.com"]
+    }
+
+    # Restringe a role ao repo/branch (main)
+    # Formato do sub: repo:<owner>/<repo>:ref:refs/heads/<branch>
+    condition {
+      test     = "StringLike"
+      variable = "token.actions.githubusercontent.com:sub"
+      values   = ["repo:good-burguer/lanchonete-app:ref:refs/heads/main"]
+    }
+  }
+}
+
+resource "aws_iam_role" "gha_lanchonete_app" {
+  name               = "gb-dev-gha-lanchonete-app"
+  assume_role_policy = data.aws_iam_policy_document.gha_lanchonete_app_trust.json
+  tags               = { Project = "Good-Burger", Env = "dev" }
+}
+
+resource "aws_iam_role_policy_attachment" "gha_lanchonete_app_ecr_attach" {
+  role       = aws_iam_role.gha_lanchonete_app.name
+  policy_arn = aws_iam_policy.ecr_push.arn
+}
+
+output "gha_lanchonete_app_role_arn" {
+  value = aws_iam_role.gha_lanchonete_app.arn
+}
