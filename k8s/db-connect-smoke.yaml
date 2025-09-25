@@ -1,0 +1,47 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: db-connect-smoke
+  namespace: app
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        app: db-connect-smoke
+    spec:
+      serviceAccountName: lanchonete-app-sa
+      restartPolicy: Never
+      containers:
+        - name: py
+          image: public.ecr.aws/docker/library/python:3.11-alpine
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: AWS_REGION
+              value: us-east-1
+            - name: DB_SECRET_NAME
+              value: gb/dev/rds/postgres
+          command: ["sh","-c"]
+          args:
+            - |
+              set -e
+              pip install --no-cache-dir boto3 psycopg2-binary >/dev/null
+              python - <<'PY'
+              import os, json, boto3, psycopg2
+              sm = boto3.client("secretsmanager", region_name=os.getenv("AWS_REGION","us-east-1"))
+              sec = sm.get_secret_value(SecretId=os.getenv("DB_SECRET_NAME"))
+              c = json.loads(sec["SecretString"])
+              dsn = f"host={c['host']} dbname={c.get('dbname','postgres')} user={c['username']} password={c['password']} port={c.get('port',5432)} sslmode=require"
+              print("Conectando ao RDS…")
+              conn = psycopg2.connect(dsn)
+              cur = conn.cursor(); cur.execute("SELECT 1;")
+              print("SELECT 1 ->", cur.fetchone()); cur.close(); conn.close()
+              print("DB-SMOKE: OK")
+              PY
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "200m"
+              memory: "256Mi"

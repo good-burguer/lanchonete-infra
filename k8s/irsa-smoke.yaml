@@ -1,0 +1,14 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: irsa-smoke
+  namespace: app
+spec:
+  template:
+    spec:
+      serviceAccountName: lanchonete-app-sa
+      restartPolicy: Never
+      containers:
+        - name: awscli
+          image: public.ecr.aws/aws-cli/aws-cli:latest
+          command: ["sh","-c","aws --version && aws --region us-east-1 secretsmanager get-secret-value --secret-id gb/dev/rds/postgres >/dev/null && echo OK"]
