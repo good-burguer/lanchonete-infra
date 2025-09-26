@@ -9,7 +9,9 @@ set -euo pipefail
 : "${EKS_NAME:=gb-dev-eks}"                 # fallback caso não haja output no state
 : "${EKS_NODEGROUP:=gb-dev-eks-ng}"         # nome padrão do nodegroup
 : "${APPLY_APP_MANIFESTS:=true}"           # se "true", aplica k8s/app/ após recriar o cluster
-: "${K8S_DIR:=../../k8s/app}"               # caminho (relativo a este script) dos manifests da app
+: "${K8S_NS_DIR:=../../k8s/namespace}"      # diretório com manifests de Namespace (aplicados sem -n)
+: "${K8S_APP_DIR:=../../k8s/app}"           # diretório com manifests da aplicação (aplicados com -n app)
+: "${K8S_SYS_DIR:=../../k8s/kube-system}"   # diretório com manifests do kube-system (aplicados com -n kube-system)
 
 log() { printf "\n[resume] %s\n" "$*"; }
 die() { echo "[resume][erro] $*" >&2; exit 1; }
@@ -90,11 +92,34 @@ esac
 
 # ====== 5) (Opcional) Aplicar manifests da aplicação ======
 if [[ "${APPLY_APP_MANIFESTS}" == "true" ]]; then
-  log "Aplicando manifests de aplicação em ${K8S_DIR}…"
-  # Garante namespace
-  kubectl get ns app >/dev/null 2>&1 || kubectl create namespace app
-  # Aplica diretório
-  kubectl -n app apply -f "${K8S_DIR}"
+  # 5.1) Namespace(s) (sem -n)
+  if [[ -d "${K8S_NS_DIR}" ]]; then
+    log "Aplicando manifests de namespace em ${K8S_NS_DIR}…"
+    kubectl apply -f "${K8S_NS_DIR}"
+  else
+    # fallback: garante pelo menos o namespace app
+    kubectl get ns app >/dev/null 2>&1 || kubectl create namespace app
+  fi
+
+  # 5.2) App (com -n app)
+  if [[ -d "${K8S_APP_DIR}" ]]; then
+    log "Aplicando manifests da aplicação em ${K8S_APP_DIR} (namespace app)…"
+    # garante namespace app
+    kubectl get ns app >/dev/null 2>&1 || kubectl create namespace app
+    # aplica todos os arquivos .yaml no diretório
+    find "${K8S_APP_DIR}" -type f -name '*.yaml' -print0 | xargs -0 -I{} kubectl -n app apply -f {}
+  else
+    log "Diretório de app não encontrado: ${K8S_APP_DIR} (pulando)."
+  fi
+
+  # 5.3) kube-system (com -n kube-system)
+  if [[ -d "${K8S_SYS_DIR}" ]]; then
+    log "Aplicando manifests do kube-system em ${K8S_SYS_DIR}…"
+    # usar server-side para lidar com aws-auth e evitar conflitos de resourceVersion
+    find "${K8S_SYS_DIR}" -type f -name '*.yaml' -print0 | xargs -0 -I{} kubectl -n kube-system apply --server-side --force-conflicts -f {}
+  else
+    log "Diretório kube-system não encontrado: ${K8S_SYS_DIR} (pulando)."
+  fi
 else
   log "Aplicação dos manifests desabilitada (APPLY_APP_MANIFESTS=false)."
 fi
@@ -104,5 +129,6 @@ log "Verificando nós do cluster…"
 kubectl get nodes -o wide || true
 log "Verificando namespaces básicos…"
 kubectl get ns || true
+kubectl -n app get deploy,svc,job,pods || true
 
 log "✅ Ambiente retomado (EKS ativo, kubeconfig atualizado, RDS em operação)."
