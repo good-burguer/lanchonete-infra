@@ -23,7 +23,7 @@ spec:
                   expirationSeconds: 86400
       containers:
         - name: app
-          image: 822619186337.dkr.ecr.us-east-1.amazonaws.com/lanchonete-app:1207363-amd64-fix8
+          image: ${APP_IMAGE_URI}
           imagePullPolicy: Always
           ports:
             - containerPort: 8080

@@ -12,9 +12,16 @@ set -euo pipefail
 : "${K8S_NS_DIR:=../../k8s/namespace}"      # diretório com manifests de Namespace (aplicados sem -n)
 : "${K8S_APP_DIR:=../../k8s/app}"           # diretório com manifests da aplicação (aplicados com -n app)
 : "${K8S_SYS_DIR:=../../k8s/kube-system}"   # diretório com manifests do kube-system (aplicados com -n kube-system)
+: "${ACCOUNT_ID:=$(aws sts get-caller-identity --query Account --output text 2>/dev/null || true)}"
+: "${APP_REPO:=lanchonete-app}"
+: "${GIT_SHA:=$(git rev-parse --short HEAD 2>/dev/null || echo dev)}"
+: "${APP_TAG:=${GIT_SHA}-amd64}"
+: "${APP_IMAGE_URI:=${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${APP_REPO}:${APP_TAG}}"
 
 log() { printf "\n[resume] %s\n" "$*"; }
 die() { echo "[resume][erro] $*" >&2; exit 1; }
+
+log "Imagem da aplicação (APP_IMAGE_URI): ${APP_IMAGE_URI:-<indefinida>}"
 
 # ====== 0) Terraform init (sempre reconfigure backend S3 + DynamoDB) ======
 log "Inicializando Terraform com backend S3 + DynamoDB…"
@@ -106,8 +113,23 @@ if [[ "${APPLY_APP_MANIFESTS}" == "true" ]]; then
     log "Aplicando manifests da aplicação em ${K8S_APP_DIR} (namespace app)…"
     # garante namespace app
     kubectl get ns app >/dev/null 2>&1 || kubectl create namespace app
-    # aplica todos os arquivos .yaml no diretório
-    find "${K8S_APP_DIR}" -type f -name '*.yaml' -print0 | xargs -0 -I{} kubectl -n app apply -f {}
+
+    # 5.2.1) Renderiza e aplica o Deployment com a imagem parametrizada
+    if [[ -f "${K8S_APP_DIR}/deployment.yaml" ]]; then
+      log "Renderizando deployment com APP_IMAGE_URI=${APP_IMAGE_URI}…"
+      APP_IMAGE_URI="${APP_IMAGE_URI}" envsubst < "${K8S_APP_DIR}/deployment.yaml" | kubectl -n app apply -f -
+    else
+      log "Arquivo deployment.yaml não encontrado em ${K8S_APP_DIR}."
+    fi
+
+    # 5.2.2) Aplica os demais manifests da aplicação (exceto o deployment, que já foi)
+    find "${K8S_APP_DIR}" -type f -name '*.yaml' ! -name 'deployment.yaml' -print0 | xargs -0 -I{} kubectl -n app apply -f {}
+
+    # 5.2.3) Aguarda rollout do deployment (se existir)
+    if kubectl -n app get deploy lanchonete-app >/dev/null 2>&1; then
+      kubectl -n app rollout status deploy/lanchonete-app || true
+      kubectl -n app get deploy lanchonete-app -o=jsonpath='{.spec.template.spec.containers[0].image}{"\n"}' || true
+    fi
   else
     log "Diretório de app não encontrado: ${K8S_APP_DIR} (pulando)."
   fi
