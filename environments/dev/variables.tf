@@ -39,5 +39,5 @@ variable "eks_desired_size" {
 
 variable "eks_instance_types" {
   type    = list(string)
-  default = ["t3.small"]
+  default = ["t2.micro"]
 }

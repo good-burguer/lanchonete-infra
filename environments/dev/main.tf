@@ -5,95 +5,96 @@ terraform {
     tls = { source = "hashicorp/tls", version = "~> 4.0" }
   }
 }
-provider "aws" { region = var.aws_region }
 
-############################
-# VPC mínima (dev)
-############################
-
-data "aws_availability_zones" "available" {
-  state = "available"
+provider "aws" {
+  region = var.aws_region
 }
 
-resource "aws_vpc" "gb" {
-  cidr_block           = "10.10.0.0/16"
-  enable_dns_support   = true
-  enable_dns_hostnames = true
-  tags = {
-    Name    = "gb-dev-vpc"
-    Project = "Good-Burger"
-    Env     = "dev"
+#########################################################
+# TAGS E VARIÁVEIS GLOBAIS
+#########################################################
+
+locals {
+  common_tags = {
+    Project     = var.project_name
+    Environment = var.environment
+    ManagedBy   = "Terraform"
   }
 }
 
-# Internet Gateway para subnets públicas
-resource "aws_internet_gateway" "igw" {
-  vpc_id = aws_vpc.gb.id
-  tags = {
-    Name    = "gb-dev-igw"
-    Project = "Good-Burger"
-    Env     = "dev"
-  }
+#########################################################
+# MÓDULOS DE INFRAESTRUTURA BASE
+#########################################################
+
+module "vpc" {
+  source       = "../../modules/vpc"
+  project_name = var.project_name
+  environment  = var.environment
+  tags         = local.common_tags
 }
 
-# 2 subnets públicas (em 2 AZs)
-resource "aws_subnet" "public" {
-  count                   = 2
-  vpc_id                  = aws_vpc.gb.id
-  cidr_block              = ["10.10.0.0/24", "10.10.1.0/24"][count.index]
-  availability_zone       = data.aws_availability_zones.available.names[count.index]
-  map_public_ip_on_launch = true
-  tags = {
-    Name    = "gb-dev-public-${count.index + 1}"
-    Project = "Good-Burger"
-    Env     = "dev"
-    Tier    = "public"
-  }
+module "eks" {
+  source             = "../../modules/eks"
+  project_name       = var.project_name
+  environment        = var.environment
+  cluster_name       = var.eks_cluster_name
+  cluster_version    = var.eks_version
+  instance_types     = var.eks_instance_types
+  desired_size       = var.eks_desired_size
+  min_size           = var.eks_min_size
+  max_size           = var.eks_max_size
+
+  # Conecta o EKS na VPC criada pelo módulo anterior
+  vpc_id             = module.vpc.vpc_id
+  private_subnet_ids = module.vpc.private_subnet_ids
+
+  tags = local.common_tags
 }
 
-# 2 subnets privadas (em 2 AZs)
-resource "aws_subnet" "private" {
-  count             = 2
-  vpc_id            = aws_vpc.gb.id
-  cidr_block        = ["10.10.10.0/24", "10.10.11.0/24"][count.index]
-  availability_zone = data.aws_availability_zones.available.names[count.index]
-  tags = {
-    Name    = "gb-dev-private-${count.index + 1}"
-    Project = "Good-Burger"
-    Env     = "dev"
-    Tier    = "private"
-  }
+#########################################################
+# AUTENTICAÇÃO & REGISTRO DE IMAGENS
+#########################################################
+
+module "cognito" {
+  source       = "../../modules/cognito"
+  project_name = var.project_name
+  environment  = var.environment
+  tags         = local.common_tags
 }
 
-# Route table pública (rota 0.0.0.0/0 para o IGW)
-resource "aws_route_table" "public" {
-  vpc_id = aws_vpc.gb.id
-  route {
-    cidr_block = "0.0.0.0/0"
-    gateway_id = aws_internet_gateway.igw.id
-  }
-  tags = {
-    Name    = "gb-dev-public-rt"
-    Project = "Good-Burger"
-    Env     = "dev"
-  }
+module "ecr" {
+  source           = "../../modules/ecr"
+  project_name     = var.project_name
+  environment      = var.environment
+  repository_names = ["api", "frontend"]
+  tags             = local.common_tags
 }
 
-resource "aws_route_table_association" "public_assoc" {
-  count          = length(aws_subnet.public)
-  subnet_id      = aws_subnet.public[count.index].id
-  route_table_id = aws_route_table.public.id
+#########################################################
+# API GATEWAY (entrada da aplicação)
+#########################################################
+
+module "api_gateway" {
+  source       = "../../modules/api-gateway"
+  project_name = var.project_name
+  environment  = var.environment
+  tags         = local.common_tags
+
+  # Conecta com a rede
+  vpc_id             = module.vpc.vpc_id
+  private_subnet_ids = module.vpc.private_subnet_ids
+
+  # Conecta com o backend (ALB do EKS)
+  target_alb_listener_arn = module.eks.alb_listener_arn
+
+  # Conecta com a segurança (Cognito)
+  cognito_user_pool_endpoint  = module.cognito.user_pool_endpoint
+  cognito_user_pool_client_id = module.cognito.user_pool_client_id
 }
 
-# NAT Gateway (em uma subnet pública) + EIP
-resource "aws_eip" "nat" {
-  domain = "vpc"
-  tags = {
-    Name    = "gb-dev-nat-eip"
-    Project = "Good-Burger"
-    Env     = "dev"
-  }
-}
+#########################################################
+# GLUE CODE - Específico para o ambiente (dev)
+#########################################################
 
 resource "aws_nat_gateway" "nat" {
   allocation_id = aws_eip.nat.id
@@ -275,38 +276,37 @@ data "aws_iam_policy_document" "app_secrets" {
   statement {
     sid       = "ReadRdsSecret"
     actions   = ["secretsmanager:GetSecretValue"]
-    resources = [local.rds_secret_arn]
+    resources = [data.terraform_remote_state.database.outputs.rds_secret_arn]
   }
 }
 
 resource "aws_iam_policy" "app_secrets" {
-  name   = "gb-dev-app-read-rds-secret"
+  name   = "${var.project_name}-${var.environment}-app-read-rds-secret"
   policy = data.aws_iam_policy_document.app_secrets.json
 }
 
-# Role IRSA: só o SA app/lanchonete-app-sa pode assumir
 data "aws_iam_policy_document" "app_irsa_trust" {
   statement {
     actions = ["sts:AssumeRoleWithWebIdentity"]
     principals {
       type        = "Federated"
-      identifiers = [aws_iam_openid_connect_provider.eks.arn]
+      identifiers = [module.eks.oidc_provider_arn]
     }
     condition {
       test     = "StringEquals"
-      variable = "${local.oidc_provider_url}:aud"
+      variable = "${replace(module.eks.oidc_provider_url, "https://", "")}:aud"
       values   = ["sts.amazonaws.com"]
     }
     condition {
       test     = "StringEquals"
-      variable = "${local.oidc_provider_url}:sub"
-      values   = ["system:serviceaccount:${local.app_namespace}:${local.app_sa_name}"]
+      variable = "${replace(module.eks.oidc_provider_url, "https://", "")}:sub"
+      values   = ["system:serviceaccount:app:lanchonete-app-sa"]
     }
   }
 }
 
 resource "aws_iam_role" "app_irsa" {
-  name               = "gb-dev-eks-app-secrets"
+  name               = "${var.project_name}-${var.environment}-eks-app-secrets"
   assume_role_policy = data.aws_iam_policy_document.app_irsa_trust.json
   tags               = { Project = "Good-Burger", Env = "dev" }
 }
