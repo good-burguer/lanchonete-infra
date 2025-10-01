@@ -41,3 +41,9 @@ variable "eks_instance_types" {
   type    = list(string)
   default = ["t3.small"]
 }
+
+variable "jwt_secret" {
+  description = "Segredo para assinar os tokens JWT da aplicação."
+  type        = string
+  sensitive   = true
+}

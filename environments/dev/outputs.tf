@@ -12,3 +12,17 @@ output "private_subnet_ids" { value = [for s in aws_subnet.private : s.id] }
 output "eks_cluster_security_group_id" {
   value = aws_eks_cluster.this.vpc_config[0].cluster_security_group_id
 }
+output "cognito_user_pool_id" {
+  description = "ID do User Pool do Cognito."
+  value       = aws_cognito_user_pool.user_pool.id
+}
+
+output "cognito_user_pool_client_id" {
+  description = "ID do App Client do Cognito para o frontend."
+  value       = aws_cognito_user_pool_client.app_client.id
+}
+
+output "api_gateway_invoke_url" {
+  description = "URL base para invocar a API Gateway."
+  value       = aws_api_gateway_stage.dev.invoke_url
+}

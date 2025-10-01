@@ -430,3 +430,207 @@ resource "aws_iam_role_policy_attachment" "gha_lanchonete_app_eks_attach" {
 output "gha_lanchonete_app_role_arn" {
   value = aws_iam_role.gha_lanchonete_app.arn
 }
+
+# Cognito
+# Diretório de usuários
+resource "aws_cognito_user_pool" "user_pool" {
+  name = "gb-dev-user-pool"
+
+  # Exigir que o email seja o nome de usuário e que ele seja verificado
+  username_attributes = ["email"]
+  auto_verified_attributes = ["email"]
+
+  # Política de senha simples para começar
+  password_policy {
+    minimum_length    = 8
+    require_lowercase = true
+    require_uppercase = true
+    require_numbers   = true
+    require_symbols   = true
+  }
+
+  tags = {
+    Project = "Good-Burger"
+    Env     = "dev"
+  }
+}
+
+# O "cliente" que seu app frontend usará para se comunicar com o Cognito
+resource "aws_cognito_user_pool_client" "app_client" {
+  name = "gb-dev-app-client"
+  user_pool_id = aws_cognito_user_pool.user_pool.id
+
+  # Não gerar um "secret" para clientes web (SPA) é uma prática comum
+  generate_secret = false
+
+  # Fluxos de autenticação que vamos permitir
+  explicit_auth_flows = [
+    "ALLOW_USER_PASSWORD_AUTH",
+    "ALLOW_REFRESH_TOKEN_AUTH"
+  ]
+}
+
+#Lambda
+# Permissões
+resource "aws_iam_role" "lambda_exec" {
+  name = "gb-dev-auth-lambda-exec-role"
+
+  # Política de confiança: permite que o serviço Lambda "assuma" esta role.
+  assume_role_policy = jsonencode({
+    Version   = "2012-10-17",
+    Statement = [{
+      Action    = "sts:AssumeRole",
+      Effect    = "Allow",
+      Principal = {
+        Service = "lambda.amazonaws.com"
+      }
+    }]
+  })
+
+  tags = {
+    Project = "Good-Burger"
+    Env     = "dev"
+  }
+}
+
+
+# RECURSO DA FUNÇÃO LAMBDA EM SI
+resource "aws_lambda_function" "auth_lambda" {
+  function_name = "gb-dev-auth-lambda"
+  role          = aws_iam_role.lambda_exec.arn
+
+  # Lembre-se que o Terraform precisa encontrar este arquivo na mesma pasta
+  filename         = "deployment_package.zip" 
+  source_code_hash = filebase64sha256("deployment_package.zip")
+
+  handler = "handler.lambda_handler" # nome_do_arquivo.nome_da_função
+  runtime = "python3.9"
+  timeout = 10
+
+  # Bloco para passar os segredos e configurações para o código Python
+  environment {
+    variables = {
+      # Dizemos ao código Python apenas o NOME do segredo a ser buscado
+      DB_SECRET_NAME       = "gb/dev/rds/postgres"
+
+      # As outras variáveis que o código ainda precisa
+      COGNITO_USER_POOL_ID = aws_cognito_user_pool.user_pool.id
+      JWT_SECRET           = var.jwt_secret
+    }
+  }
+
+  tags = {
+    Project = "Good-Burger"
+    Env     = "dev"
+  }
+}
+
+# Esta política permite a leitura do segredo específico do RDS
+data "aws_iam_policy_document" "lambda_read_rds_secret" {
+  statement {
+    sid       = "AllowLambdaToReadRdsSecret"
+    actions   = ["secretsmanager:GetSecretValue"]
+    resources = [data.terraform_remote_state.database.outputs.rds_secret_arn]
+  }
+}
+
+resource "aws_iam_policy" "lambda_read_rds_secret" {
+  name   = "gb-dev-lambda-read-rds-secret-policy"
+  policy = data.aws_iam_policy_document.lambda_read_rds_secret.json
+}
+
+# Anexa a nova política à Role da nossa Lambda
+resource "aws_iam_role_policy_attachment" "lambda_secrets_policy" {
+  role       = aws_iam_role.lambda_exec.name
+  policy_arn = aws_iam_policy.lambda_read_rds_secret.arn
+}
+
+# PERMISSÃO PARA O API GATEWAY INVOCAR A LAMBDA
+resource "aws_lambda_permission" "api_gateway" {
+  statement_id  = "AllowAPIGatewayInvoke"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.auth_lambda.function_name
+  principal     = "apigateway.amazonaws.com"
+
+  # Garante que a permissão é apenas para a nossa API específica
+  source_arn = "${aws_api_gateway_rest_api.api.execution_arn}/*/*"
+}
+
+# Anexa a política básica de execução da AWS.
+# Isso dá à Lambda permissão para escrever logs no CloudWatch.
+resource "aws_iam_role_policy_attachment" "lambda_basic_execution" {
+  role       = aws_iam_role.lambda_exec.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+
+# API Gateway
+# API REST
+resource "aws_api_gateway_rest_api" "api" {
+  name        = "gb-dev-api"
+  description = "API Gateway para os microsserviços da Lanchonete"
+
+  endpoint_configuration {
+    types = ["REGIONAL"]
+  }
+}
+
+# O "segurança" que usa o Cognito para validar os tokens dos usuários
+resource "aws_api_gateway_authorizer" "cognito" {
+  name                   = "cognito-authorizer"
+  type                   = "COGNITO_USER_POOLS"
+  rest_api_id            = aws_api_gateway_rest_api.api.id
+  provider_arns          = [aws_cognito_user_pool.user_pool.arn]
+  identity_source        = "method.request.header.Authorization" # O token virá no cabeçalho "Authorization"
+}
+
+# Recurso proxy "catch-all". O {proxy+} significa "qualquer caminho a partir daqui"
+resource "aws_api_gateway_resource" "proxy" {
+  path_part   = "{proxy+}"
+  parent_id   = aws_api_gateway_rest_api.api.root_resource_id
+  rest_api_id = aws_api_gateway_rest_api.api.id
+}
+
+# Método "ANY". Significa qualquer verbo HTTP (GET, POST, PUT, DELETE, etc.)
+# Note que ele continua protegido pelo nosso "segurança" do Cognito!
+resource "aws_api_gateway_method" "proxy" {
+  rest_api_id   = aws_api_gateway_rest_api.api.id
+  resource_id   = aws_api_gateway_resource.proxy.id
+  http_method   = "ANY"
+  authorization = "NONE"
+}
+
+resource "aws_api_gateway_integration" "lambda_proxy" {
+  rest_api_id             = aws_api_gateway_rest_api.api.id
+  resource_id             = aws_api_gateway_resource.proxy.id
+  http_method             = aws_api_gateway_method.proxy.http_method
+  
+  integration_http_method = "POST" 
+  type                    = "AWS_PROXY"
+  uri                     = aws_lambda_function.auth_lambda.invoke_arn # A conexão acontece aqui!
+}
+
+# ATUALIZAÇÃO NECESSÁRIA: Também precisamos atualizar os "triggers" do deploy
+# para que ele aponte para os novos recursos proxy.
+resource "aws_api_gateway_deployment" "api_deployment" {
+  rest_api_id = aws_api_gateway_rest_api.api.id
+
+triggers = {
+  redeployment = sha1(jsonencode({
+    resource    = jsonencode(aws_api_gateway_resource.proxy),
+    method      = jsonencode(aws_api_gateway_method.proxy),
+    integration = jsonencode(aws_api_gateway_integration.lambda_proxy)
+  }))
+}
+
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+
+# Stage (Estagio) 
+resource "aws_api_gateway_stage" "dev" {
+  deployment_id = aws_api_gateway_deployment.api_deployment.id
+  rest_api_id   = aws_api_gateway_rest_api.api.id
+  stage_name    = "dev"
+}
