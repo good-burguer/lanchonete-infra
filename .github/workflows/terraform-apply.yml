@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 jobs:
-  terraform:
+  terraform-apply:
     name: Terraform Apply
     runs-on: ubuntu-latest
     defaults:
