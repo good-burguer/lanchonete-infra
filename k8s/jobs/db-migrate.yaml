@@ -14,10 +14,10 @@ spec:
         job: db-migrate
     spec:
       restartPolicy: Never
-      serviceAccountName: lanchonete-app-sa  # usa IRSA p/ ler segredo no Secrets Manager
+      serviceAccountName: lanchonete-app-sa
       containers:
         - name: migrator
-          image: 822619186337.dkr.ecr.us-east-1.amazonaws.com/lanchonete-app:1207363-amd64-devschema
+          image: 822619186337.dkr.ecr.us-east-1.amazonaws.com/lanchonete-app:e9e695ba6f95a85bbae75f2e55ac1a7e2d28e857-amd64
           imagePullPolicy: Always
           env:
             - name: DB_SECRET_NAME
@@ -26,8 +26,24 @@ spec:
               value: us-east-1
             - name: AWS_DEFAULT_REGION
               value: us-east-1
-          command: ["/bin/sh","-lc"]
+          command: ["/bin/sh", "-lc"]
           args:
-            - |
+            - |-
               set -eu
+
+              echo "[migrate] Resolviendo URL do banco via Secrets Manager…"
+              ALEMBIC_DATABASE_URL="$(python - <<'PY'
+              import os, json, urllib.parse, boto3
+              name   = os.environ['DB_SECRET_NAME']
+              region = os.environ.get('AWS_REGION') or os.environ.get('AWS_DEFAULT_REGION') or 'us-east-1'
+              sm = boto3.client('secretsmanager', region_name=region)
+              data = json.loads(sm.get_secret_value(SecretId=name)['SecretString'])
+              user = data['username']; pwd = urllib.parse.quote_plus(data['password'])
+              host = data['host']; db = data.get('dbname') or data.get('database'); port = data.get('port', 5432)
+              print(f"postgresql+psycopg2://{user}:{pwd}@{host}:{port}/{db}?sslmode=require")
+              PY
+              )"
+              export ALEMBIC_DATABASE_URL
+              echo "[migrate] usando ALEMBIC_DATABASE_URL=${ALEMBIC_DATABASE_URL%@*}@…"
+
               alembic upgrade head

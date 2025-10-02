@@ -21,18 +21,45 @@ jobs:
         working-directory: environments/dev
     steps:
       - uses: actions/checkout@v4
+      - name: Preflight – repo/ref & role
+        run: |
+          echo "Repo: ${{ github.repository }} | Ref: ${{ github.ref }} | SHA: ${{ github.sha }}"
+          if [ -z "${{ secrets.AWS_ROLE_TERRAFORM }}" ]; then
+            echo "ERROR: secrets.AWS_ROLE_TERRAFORM is empty"; exit 1; fi
+          echo "Role to assume: ${{ secrets.AWS_ROLE_TERRAFORM }}"
+
+      - name: OIDC token smoke-test (no secret output)
+        uses: actions/github-script@v7
+        id: oidc
+        with:
+          script: |
+            const token = await core.getIDToken('sts.amazonaws.com');
+            core.setOutput('has', token ? 'yes' : 'no');
+            core.setSecret(token);
+            const payload = JSON.parse(Buffer.from(token.split('.')[1], 'base64').toString());
+            core.info(`OIDC aud=${payload.aud} sub=${payload.sub}`);
       - name: Debug tree
         run: |
           pwd
           git rev-parse --short HEAD
           ls -la
           echo "----- variables.tf -----"
-          sed -n '1,160p' environments/dev/variables.tf || true
+          sed -n '1,160p' variables.tf || true
       - uses: hashicorp/setup-terraform@v3
       - uses: aws-actions/configure-aws-credentials@v4
+        env:
+          AWS_ACTIONS_ENABLE_OIDC_DEBUG_LOGS: "true"
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_TERRAFORM }}
+          role-session-name: gha-terraform-${{ github.run_id }}
           aws-region: ${{ vars.AWS_REGION }}
+          audience: sts.amazonaws.com
+
+      - name: STS - who am I?
+        run: |
+          set -euo pipefail
+          echo "Repo: ${{ github.repository }} | Ref: ${{ github.ref }} | SHA: ${{ github.sha }}"
+          aws sts get-caller-identity || { echo "No AWS creds set (assume-role likely failed)"; exit 1; }
 
       - name: Terraform Init
         run: |
