@@ -382,15 +382,11 @@ data "aws_iam_policy_document" "gha_lanchonete_app_trust" {
       values   = ["sts.amazonaws.com"]
     }
 
-    # Restringe a role ao repo/branch (main)
-    # Formato do sub: repo:<owner>/<repo>:ref:refs/heads/<branch>
+    # Permite qualquer repositório e branch (temporariamente, para debug do erro de OIDC)
     condition {
       test     = "StringLike"
       variable = "token.actions.githubusercontent.com:sub"
-      values = [
-        "repo:good-burguer/lanchonete-infra:ref:refs/heads/*",
-        "repo:good-burguer/lanchonete-infra:ref:refs/pull/*"
-      ]
+      values = ["repo:good-burguer/lanchonete-infra:*"]
     }
   }
 }
