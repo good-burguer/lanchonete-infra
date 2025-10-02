@@ -382,12 +382,11 @@ data "aws_iam_policy_document" "gha_lanchonete_app_trust" {
       values   = ["sts.amazonaws.com"]
     }
 
-    # Restringe a role ao repo/branch (main)
-    # Formato do sub: repo:<owner>/<repo>:ref:refs/heads/<branch>
+    # Permite qualquer repositório e branch (temporariamente, para debug do erro de OIDC)
     condition {
       test     = "StringLike"
       variable = "token.actions.githubusercontent.com:sub"
-      values   = ["repo:good-burguer/lanchonete-app:ref:refs/heads/main"]
+      values = ["repo:good-burguer/lanchonete-app:*"]
     }
   }
 }
@@ -457,4 +456,44 @@ resource "aws_eks_access_policy_association" "gha_admin" {
 
 output "gha_lanchonete_app_role_arn" {
   value = aws_iam_role.gha_lanchonete_app.arn
+}
+data "aws_iam_policy_document" "gha_terraform_trust" {
+  statement {
+    actions = ["sts:AssumeRoleWithWebIdentity"]
+    principals {
+      type        = "Federated"
+      identifiers = [aws_iam_openid_connect_provider.github.arn]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "token.actions.githubusercontent.com:aud"
+      values   = ["sts.amazonaws.com"]
+    }
+
+    condition {
+      test     = "StringLike"
+      variable = "token.actions.githubusercontent.com:sub"
+      values = [
+        "repo:good-burguer/lanchonete-app:*",
+        "repo:good-burguer/lanchonete-infra:*",
+        "repo:good-burguer/lanchonete-database:*",
+        "repo:good-burguer/lanchonete-auth:*"
+      ]
+    }
+  }
+}
+
+resource "aws_iam_role" "gha_terraform" {
+  name               = "gb-oidc-terraform"
+  assume_role_policy = data.aws_iam_policy_document.gha_terraform_trust.json
+  tags = {
+    Project = "Good-Burger"
+    Env     = "dev"
+  }
+}
+
+resource "aws_iam_role_policy_attachment" "gha_terraform_admin" {
+  role       = aws_iam_role.gha_terraform.name
+  policy_arn = "arn:aws:iam::aws:policy/AdministratorAccess"
 }

@@ -1,12 +1,9 @@
-name: terraform
+name: terraform-apply
 
 on:
-  pull_request:
-    branches: [ "main" ]
-    paths: [ "environments/dev/**", ".github/workflows/terraform.yml" ]
   push:
     branches: [ "main" ]
-    paths:  [ "environments/dev/**", ".github/workflows/terraform.yml" ]
+    paths: [ "environments/dev/**", ".github/workflows/terraform-apply.yml" ]
   workflow_dispatch:
 
 permissions:
@@ -75,10 +72,6 @@ jobs:
 
       - name: Terraform Validate
         run: terraform validate
-
-      - name: Terraform Plan
-        if: github.event_name == 'pull_request'
-        run: terraform plan -input=false -var="aws_region=${{ vars.AWS_REGION }}" -var="tf_state_bucket=${{ vars.TF_STATE_BUCKET }}" -var="tf_lock_table=${{ vars.TF_LOCK_TABLE }}"
 
       - name: Terraform Apply
         if: github.ref == 'refs/heads/main' && github.event_name == 'push'
