@@ -23,39 +23,6 @@ die() { echo "[resume][erro] $*" >&2; exit 1; }
 
 log "Imagem da aplicação (APP_IMAGE_URI): ${APP_IMAGE_URI:-<indefinida>}"
 
-# ====== -1) Empacotar a Função Lambda de Autenticação (teste local) ======
-log "Empacotando a função Lambda 'lanchonete-auth'..."
-AUTH_DIR="../../../lanchonete-auth-main"
-INFRA_DIR="."
-
-if [ -d "$AUTH_DIR" ]; then
-  (
-    cd "$AUTH_DIR"
-    rm -f deployment_package.zip
-    rm -rf build
-    mkdir build
-    
-    echo ">> Instalando dependências..."
-    pip install -q -r requirements.txt -t ./build
-    
-    echo ">> Copiando código-fonte..."
-    cp handler.py ./build/
-    cp -r src/ ./build/
-    
-    echo ">> Criando o deployment_package.zip"
-    cd build
-    zip -q -r ../deployment_package.zip .
-    cd ..
-    rm -rf build
-
-    echo ">> Movendo o pacote para a pasta de infra..."
-    #mv deployment_package.zip "$INFRA_DIR"
-  )
-  log "Pacote da Lambda criado com sucesso."
-else
-  die "Diretório da Lambda não encontrado em ${AUTH_DIR}"
-fi
-
 # ====== 0) Terraform init (sempre reconfigure backend S3 + DynamoDB) ======
 log "Inicializando Terraform com backend S3 + DynamoDB…"
 terraform init -input=false -reconfigure \

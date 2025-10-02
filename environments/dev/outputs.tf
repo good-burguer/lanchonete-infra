@@ -26,3 +26,8 @@ output "api_gateway_invoke_url" {
   description = "URL base para invocar a API Gateway."
   value       = aws_api_gateway_stage.dev.invoke_url
 }
+
+output "lambda_artifacts_bucket_name" {
+  description = "Nome do S3 bucket para armazenar os pacotes de deploy das Lambdas."
+  value       = aws_s3_bucket.lambda_artifacts.bucket
+}
