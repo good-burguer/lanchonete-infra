@@ -387,7 +387,10 @@ data "aws_iam_policy_document" "gha_lanchonete_app_trust" {
     condition {
       test     = "StringLike"
       variable = "token.actions.githubusercontent.com:sub"
-      values   = ["repo:good-burguer/lanchonete-app:ref:refs/heads/main"]
+      values = [
+        "repo:good-burguer/lanchonete-infra:ref:refs/heads/*",
+        "repo:good-burguer/lanchonete-infra:ref:refs/pull/*"
+      ]
     }
   }
 }
