@@ -201,6 +201,11 @@ resource "aws_eks_cluster" "this" {
     endpoint_public_access  = true # facilita kubectl no começo; podemos restringir depois
   }
 
+  access_config {
+    authentication_mode                         = "API_AND_CONFIG_MAP"
+    bootstrap_cluster_creator_admin_permissions = true
+  }
+
   tags = {
     Project = "Good-Burger"
     Env     = "dev"
@@ -425,6 +430,29 @@ resource "aws_iam_policy" "eks_describe" {
 resource "aws_iam_role_policy_attachment" "gha_lanchonete_app_eks_attach" {
   role       = aws_iam_role.gha_lanchonete_app.name
   policy_arn = aws_iam_policy.eks_describe.arn
+}
+
+# --- Grant EKS access to the GitHub Actions role via EKS Access Entries
+# Creates/maintains the access entry for the pipeline role
+resource "aws_eks_access_entry" "gha" {
+  cluster_name  = aws_eks_cluster.this.name
+  principal_arn = aws_iam_role.gha_lanchonete_app.arn
+  type          = "STANDARD"
+
+  depends_on = [aws_eks_cluster.this]
+}
+
+# Associates the ClusterAdmin policy to the access entry (cluster-wide)
+resource "aws_eks_access_policy_association" "gha_admin" {
+  cluster_name  = aws_eks_cluster.this.name
+  principal_arn = aws_eks_access_entry.gha.principal_arn
+  policy_arn    = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
+
+  access_scope {
+    type = "cluster"
+  }
+
+  depends_on = [aws_eks_access_entry.gha]
 }
 
 output "gha_lanchonete_app_role_arn" {

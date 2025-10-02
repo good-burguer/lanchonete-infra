@@ -18,6 +18,25 @@ set -euo pipefail
 : "${APP_TAG:=${GIT_SHA}-amd64}"
 : "${APP_IMAGE_URI:=${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${APP_REPO}:${APP_TAG}}"
 
+: "${LB_NAMESPACE:=app}"                 # namespace onde está o Service do LB
+: "${LB_SERVICE_NAME:=lanchonete-svc}"   # nome do Service (tipo LoadBalancer)
+: "${LB_WAIT_TIMEOUT:=300}"              # tempo máximo (segundos) para aparecer o endpoint
+
+get_lb_endpoint() {
+  # tenta resolver hostname ou IP do LoadBalancer
+  local host ip ep
+  host="$(kubectl -n "${LB_NAMESPACE}" get svc "${LB_SERVICE_NAME}" -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null | tr -d '[:space:]')"
+  ip="$(kubectl -n "${LB_NAMESPACE}" get svc "${LB_SERVICE_NAME}" -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null | tr -d '[:space:]')"
+  if [[ -n "$host" ]]; then
+    ep="$host"
+  elif [[ -n "$ip" ]]; then
+    ep="$ip"
+  else
+    ep=""
+  fi
+  printf "%s" "$ep"
+}
+
 log() { printf "\n[resume] %s\n" "$*"; }
 die() { echo "[resume][erro] $*" >&2; exit 1; }
 
@@ -111,8 +130,31 @@ if [[ "${APPLY_APP_MANIFESTS}" == "true" ]]; then
   # 5.2) App (com -n app)
   if [[ -d "${K8S_APP_DIR}" ]]; then
     log "Aplicando manifests da aplicação em ${K8S_APP_DIR} (namespace app)…"
-    # garante namespace app
-    kubectl get ns app >/dev/null 2>&1 || kubectl create namespace app
+    # 5.2.0) Validar imagem no ECR (auto-fallback para a última válida)
+    # Se APP_IMAGE_URI não existir no ECR, pega a última imagem válida e usa no deploy
+    repo_path="${APP_IMAGE_URI%:*}"            # ex: 8226....amazonaws.com/lanchonete-app
+    repo_name="${repo_path##*/}"               # ex: lanchonete-app
+    tag="${APP_IMAGE_URI##*:}"                 # ex: abc123-amd64
+
+    if ! aws ecr describe-images \
+          --repository-name "${repo_name}" \
+          --image-ids imageTag="${tag}" \
+          --region "${AWS_REGION}" >/dev/null 2>&1; then
+      log "Imagem não encontrada no ECR: ${APP_IMAGE_URI}. Buscando última tag válida…"
+
+      LATEST_TAG="$(aws ecr describe-images \
+        --repository-name "${repo_name}" \
+        --region "${AWS_REGION}" \
+        --query 'reverse(sort_by(imageDetails,& imagePushedAt))[0].imageTags[0]' \
+        --output text 2>/dev/null || true)"
+
+      if [[ -z "${LATEST_TAG}" || "${LATEST_TAG}" == "None" ]]; then
+        die "Nenhuma imagem encontrada no ECR (${repo_name}). Construa/publica uma imagem primeiro."
+      fi
+
+      APP_IMAGE_URI="${repo_path}:${LATEST_TAG}"
+      log "Usando fallback para a imagem mais recente do ECR: ${APP_IMAGE_URI}"
+    fi
 
     # 5.2.1) Renderiza e aplica o Deployment com a imagem parametrizada
     if [[ -f "${K8S_APP_DIR}/deployment.yaml" ]]; then
@@ -142,6 +184,31 @@ if [[ "${APPLY_APP_MANIFESTS}" == "true" ]]; then
   else
     log "Diretório kube-system não encontrado: ${K8S_SYS_DIR} (pulando)."
   fi
+
+  # 5.4) Descobrir e mostrar o endpoint externo do LoadBalancer (se existir)
+  log "Verificando endpoint do LoadBalancer (${LB_NAMESPACE}/${LB_SERVICE_NAME})…"
+  if kubectl -n "${LB_NAMESPACE}" get svc "${LB_SERVICE_NAME}" >/dev/null 2>&1; then
+    # aguarda até LB expor hostname/IP ou até estourar timeout
+    SECONDS=0
+    LB_EP="$(get_lb_endpoint)"
+    while [[ -z "${LB_EP}" && "${SECONDS}" -lt "${LB_WAIT_TIMEOUT}" ]]; do
+      sleep 5
+      LB_EP="$(get_lb_endpoint)"
+    done
+
+    if [[ -n "${LB_EP}" ]]; then
+      echo
+      echo "[resume] 🌐 Endpoint externo disponível:"
+      echo "        - HTTP : http://${LB_EP}"
+      echo "        - HTTPS: https://${LB_EP}"
+      echo
+    else
+      log "Endpoint ainda não disponível após ${LB_WAIT_TIMEOUT}s. Você pode checar depois com:"
+      echo "kubectl -n ${LB_NAMESPACE} get svc ${LB_SERVICE_NAME} -o jsonpath='{.status.loadBalancer.ingress[0].hostname}{\"\\n\"}{.status.loadBalancer.ingress[0].ip}{\"\\n\"}'"
+    fi
+  else
+    log "Service ${LB_NAMESPACE}/${LB_SERVICE_NAME} não encontrado (ignorando descoberta de endpoint)."
+  fi
 else
   log "Aplicação dos manifests desabilitada (APPLY_APP_MANIFESTS=false)."
 fi
@@ -154,3 +221,4 @@ kubectl get ns || true
 kubectl -n app get deploy,svc,job,pods || true
 
 log "✅ Ambiente retomado (EKS ativo, kubeconfig atualizado, RDS em operação)."
+log "Se houver Service LoadBalancer (${LB_NAMESPACE}/${LB_SERVICE_NAME}), o endpoint foi mostrado acima."

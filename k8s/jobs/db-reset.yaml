@@ -1,0 +1,67 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  generateName: db-reset-
+  namespace: app
+  labels:
+    project: good-burger
+    env: dev
+spec:
+  ttlSecondsAfterFinished: 300
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        job: db-reset
+    spec:
+      restartPolicy: Never
+      serviceAccountName: lanchonete-app-sa  # usa IRSA para ler o Secret no AWS SM
+      containers:
+        - name: resetter
+          # use a MESMA imagem da app (tem boto3 + psycopg2)
+          image: 822619186337.dkr.ecr.us-east-1.amazonaws.com/lanchonete-app:45d8d24d212b8ef3967aa4cb8261dc30a021c285-amd64
+          imagePullPolicy: Always
+          env:
+            - name: DB_SECRET_NAME
+              value: gb/dev/rds/postgres
+            - name: AWS_REGION
+              value: us-east-1
+            - name: AWS_DEFAULT_REGION
+              value: us-east-1
+          command: ["/bin/sh","-lc"]
+          args:
+            - |
+              python - <<'PY'
+              import os, json, boto3, psycopg2, psycopg2.extras
+
+              sm_name = os.environ["DB_SECRET_NAME"]
+              region  = os.environ.get("AWS_REGION","us-east-1")
+              sm = boto3.client("secretsmanager", region_name=region)
+              sec = json.loads(sm.get_secret_value(SecretId=sm_name)["SecretString"])
+
+              user = sec["username"]; pwd = sec["password"]
+              host = sec["host"]; port = sec.get("port", 5432); db = sec["dbname"]
+
+              conn = psycopg2.connect(
+                  host=host, port=port, dbname=db, user=user, password=pwd,
+                  sslmode="require"
+              )
+              conn.autocommit = True
+              cur = conn.cursor()
+
+              # encerra outras conexões para não travar o DROP
+              cur.execute("""
+                SELECT pg_terminate_backend(pid)
+                FROM pg_stat_activity
+                WHERE datname = current_database()
+                  AND pid <> pg_backend_pid();
+              """)
+
+              # dropa e recria schema public
+              cur.execute("DROP SCHEMA IF EXISTS public CASCADE;")
+              cur.execute("CREATE SCHEMA public;")
+              cur.execute("GRANT ALL ON SCHEMA public TO public;")
+
+              print("Schema 'public' resetado com sucesso.")
+              cur.close(); conn.close()
+              PY

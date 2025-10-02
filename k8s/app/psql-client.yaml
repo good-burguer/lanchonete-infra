@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: psql-client
+  namespace: app
+  labels:
+    project: good-burger
+    env: dev
+spec:
+  serviceAccountName: lanchonete-app-sa
+  restartPolicy: Never
+  containers:
+  - name: psql
+    image: public.ecr.aws/docker/library/postgres:16
+    imagePullPolicy: IfNotPresent
+    command: ["/bin/bash","-c","--"]
+    args: ["sleep 3600"]
