@@ -540,8 +540,15 @@ resource "aws_iam_policy" "gha_lanchonete_auth_policy" {
         Effect = "Allow",
         Action = [
           "cloudformation:*",
-          "iam:GetRole",
+          "iam:CreateRole",
+          "iam:PutRolePolicy",
+          "iam:AttachRolePolicy",
           "iam:PassRole",
+          "iam:DeleteRole",
+          "iam:DeleteRolePolicy",
+          "iam:TagRole",
+          "iam:GetRole",
+          "iam:DetachRolePolicy",
           "lambda:*",
           "apigateway:*",
           "logs:*",
@@ -550,7 +557,7 @@ resource "aws_iam_policy" "gha_lanchonete_auth_policy" {
           "s3:*"
         ],
         Resource = "*"
-      }
+      },
     ]
   })
 }

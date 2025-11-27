@@ -40,7 +40,13 @@ spec:
             - name: aws-iam-token
               mountPath: /var/run/secrets/eks.amazonaws.com/serviceaccount
               readOnly: true
-          # (opcional) healthchecks
+          #resources: #Daqui
+          #  requests:
+          #    memory: "300Mi"
+          #    cpu: "200m"
+          #  limits:
+          #    memory: "512Mi"
+          #    cpu: "500m" #
           readinessProbe:
             httpGet: { path: /health/, port: 8080 }
             initialDelaySeconds: 10

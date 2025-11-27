@@ -122,4 +122,17 @@ init_tf
 destroy_via_tf || true
 destroy_via_cli || true
 
+log "Chamando script de parada no repositório de autenticação (lanchonete-auth)…"
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+AUTH_DIR="${SCRIPT_DIR}/../../../lanchonete-auth"
+
+if [[ -d "$AUTH_DIR" && -f "$AUTH_DIR/pause.sh" ]]; then
+  log "Executando pause.sh do repositório lanchonete-auth…"
+  (cd "$AUTH_DIR" && ./pause.sh)
+  log "✅ Script de parada executado com sucesso."
+else
+  log "⚠️  Script de parada não encontrado em $AUTH_DIR. Verifique se o repositório foi clonado corretamente."
+fi
+
 log "✅ Ambiente pausado (RDS parado, EKS destruído)."
