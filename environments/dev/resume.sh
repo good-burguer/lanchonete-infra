@@ -255,7 +255,20 @@ log "Verificando nós do cluster…"
 kubectl get nodes -o wide || true
 log "Verificando namespaces básicos…"
 kubectl get ns || true
-kubectl -n app get deploy,svc,job,pods || true
+
+# ====== 7) Retomar ambiente do serviço de autenticação (lanchonete-auth) ======
+log "Chamando script de retomada no repositório de autenticação (lanchonete-auth)…"
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+AUTH_DIR="${SCRIPT_DIR}/../../../lanchonete-auth"
+
+if [[ -d "$AUTH_DIR" && -f "$AUTH_DIR/resume.sh" ]]; then
+  log "Executando resume.sh do repositório lanchonete-auth…"
+  (cd "$AUTH_DIR" && ./resume.sh)
+  log "✅ Script de retomada executado com sucesso."
+else
+  log "⚠️  Script de retomada não encontrado em $AUTH_DIR. Verifique se o repositório foi clonado corretamente."
+fi
 
 log "✅ Ambiente retomado (EKS ativo, kubeconfig atualizado, RDS em operação)."
 log "Se houver Service LoadBalancer (${LB_NAMESPACE}/${LB_SERVICE_NAME}), o endpoint foi mostrado acima."
