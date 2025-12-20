@@ -143,10 +143,15 @@ jobs:
             exit 1
           fi
 
-          echo "✅ Test endpoint: https://${LB_HOST}"
+          echo "✅ Test endpoints:"
+          echo "   - HTTP : http://${LB_HOST}"
+          echo "   - HTTPS: https://${LB_HOST}"
 
           echo "## 🌐 Test Environment Endpoint" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "**HTTP:** http://${LB_HOST}" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "**HTTPS:** https://${LB_HOST}" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "_Use this URL to test the application._" >> "$GITHUB_STEP_SUMMARY"
+          echo "_Use HTTP for now (HTTPS not configured in the application yet)._ " >> "$GITHUB_STEP_SUMMARY"
+          
