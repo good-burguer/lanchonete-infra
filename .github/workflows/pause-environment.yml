@@ -1,0 +1,35 @@
+name: Pause Full Environment
+
+on:
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  pause:
+    name: Destroy EKS + Services
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::822619186337:role/gb-oidc-terraform
+          aws-region: us-east-1
+
+      - name: Install Terraform
+        run: |
+          curl -fsSL https://releases.hashicorp.com/terraform/1.8.5/terraform_1.8.5_linux_amd64.zip -o terraform.zip
+          unzip terraform.zip
+          sudo mv terraform /usr/local/bin/
+
+      - name: Pause environment
+        working-directory: environments/dev
+        run: |
+          chmod +x pause.sh
+          ./pause.sh

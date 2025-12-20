@@ -1,0 +1,56 @@
+name: Resume Full Environment
+
+on:
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  resume:
+    name: Resume EKS + Services
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::822619186337:role/gb-oidc-terraform
+          aws-region: us-east-1
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y jq unzip curl wget
+
+          # Terraform
+          curl -fsSL https://releases.hashicorp.com/terraform/1.8.5/terraform_1.8.5_linux_amd64.zip -o terraform.zip
+          unzip -o terraform.zip
+          sudo mv terraform /usr/local/bin/terraform
+
+          # kubectl
+          curl -LO "https://dl.k8s.io/release/$(curl -Ls https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+          chmod +x kubectl
+          sudo mv kubectl /usr/local/bin/kubectl
+
+          # yq
+          sudo wget -q https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 -O /usr/local/bin/yq
+          sudo chmod +x /usr/local/bin/yq
+
+          terraform -v
+          kubectl version --client=true
+          yq --version
+
+      - name: Resume environment (Terraform + Kubernetes)
+        shell: bash
+        working-directory: environments/dev
+        run: |
+          set -euo pipefail
+          chmod +x resume.sh
+          APPLY_ALL_SERVICES=true ./resume.sh
