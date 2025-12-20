@@ -5,22 +5,11 @@ set -euo pipefail
 export AWS_PAGER=""
 export AWS_REGION="${AWS_REGION:-us-east-1}"
 
-EKS_CLUSTER_NAME="${EKS_CLUSTER_NAME:-gb-dev-eks}"
-K8S_NAMESPACE="${K8S_NAMESPACE:-app}"
-LB_SERVICE_NAME="${LB_SERVICE_NAME:-lanchonete-orchestrator-lb}"
-
 TF_BUCKET="${TF_BUCKET:-good-burger-tf-state}"
 TF_LOCK_TABLE="${TF_LOCK_TABLE:-good-burger-tf-lock}"
 TF_KEY="${TF_KEY:-infra/terraform.tfstate}"
 
 log() { echo -e "\n==> $*"; }
-
-delete_load_balancer() {
-  log "Removendo Service LoadBalancer (${LB_SERVICE_NAME}) no namespace ${K8S_NAMESPACE}…"
-  set +e
-  kubectl delete svc "${LB_SERVICE_NAME}" -n "${K8S_NAMESPACE}" --ignore-not-found=true >/dev/null 2>&1
-  set -e
-}
 
 stop_rds() {
   log "Parando RDS (gb-dev-postgres) se estiver AVAILABLE…"
@@ -51,7 +40,6 @@ init_tf() {
 }
 
 destroy_via_tf() {
-  # Best-effort cleanup via Terraform state (does not fail the script)
   # Destruição preferencial usando TF, mas sem falhar o script se o state não tiver os recursos
   log "Destruindo EKS Node Group (se estiver no state)…"
   if terraform state list 2>/dev/null | grep -q '^aws_eks_node_group\.default$'; then
@@ -92,7 +80,7 @@ wait_with_spinner() {
 destroy_via_cli() {
   # Checa se cluster existe
   set +e
-  STATUS=$(aws eks describe-cluster --name "${EKS_CLUSTER_NAME}" --region "$AWS_REGION" --query 'cluster.status' --output text 2>/dev/null)
+  STATUS=$(aws eks describe-cluster --name gb-dev-eks --region "$AWS_REGION" --query 'cluster.status' --output text 2>/dev/null)
   set -e
   if [[ "$STATUS" != "ACTIVE" && "$STATUS" != "CREATING" && "$STATUS" != "UPDATING" ]]; then
     log "Cluster EKS não encontrado ou já apagado."
@@ -102,14 +90,14 @@ destroy_via_cli() {
   log "EKS ainda existe na AWS (status: $STATUS). Removendo via CLI…"
 
   # Deleta todos os nodegroups e aguarda
-  NG_LIST=$(aws eks list-nodegroups --cluster-name "${EKS_CLUSTER_NAME}" --region "$AWS_REGION" --query 'nodegroups[]' --output text 2>/dev/null || true)
+  NG_LIST=$(aws eks list-nodegroups --cluster-name gb-dev-eks --region "$AWS_REGION" --query 'nodegroups[]' --output text 2>/dev/null || true)
   if [[ -n "${NG_LIST:-}" ]]; then
     for ng in $NG_LIST; do
       log "Apagando Node Group: $ng"
-      aws eks delete-nodegroup --cluster-name "${EKS_CLUSTER_NAME}" --nodegroup-name "$ng" --region "$AWS_REGION" >/dev/null || true
+      aws eks delete-nodegroup --cluster-name gb-dev-eks --nodegroup-name "$ng" --region "$AWS_REGION" >/dev/null || true
       log "Aguardando nodegroup-deleted ($ng)…"
       # Nome correto do waiter: nodegroup-deleted
-      aws eks wait nodegroup-deleted --cluster-name "${EKS_CLUSTER_NAME}" --nodegroup-name "$ng" --region "$AWS_REGION" || true
+      aws eks wait nodegroup-deleted --cluster-name gb-dev-eks --nodegroup-name "$ng" --region "$AWS_REGION" || true
     done
   else
     log "Nenhum Node Group para apagar."
@@ -117,19 +105,18 @@ destroy_via_cli() {
 
   # Double-check: aguarda até listar vazio (sem falhar)
   for _ in {1..30}; do
-    REMAINING=$(aws eks list-nodegroups --cluster-name "${EKS_CLUSTER_NAME}" --region "$AWS_REGION" --query 'length(nodegroups)' --output text 2>/dev/null || echo 0)
+    REMAINING=$(aws eks list-nodegroups --cluster-name gb-dev-eks --region "$AWS_REGION" --query 'length(nodegroups)' --output text 2>/dev/null || echo 0)
     if [[ "${REMAINING}" == "0" ]]; then break; fi
     sleep 5
   done
 
-  log "Apagando Cluster: ${EKS_CLUSTER_NAME}"
-  aws eks delete-cluster --name "${EKS_CLUSTER_NAME}" --region "$AWS_REGION" >/dev/null || true
+  log "Apagando Cluster: gb-dev-eks"
+  aws eks delete-cluster --name gb-dev-eks --region "$AWS_REGION" >/dev/null || true
   log "Aguardando cluster-deleted…"
   # Nome correto do waiter: cluster-deleted
-  aws eks wait cluster-deleted --name "${EKS_CLUSTER_NAME}" --region "$AWS_REGION" || true
+  aws eks wait cluster-deleted --name gb-dev-eks --region "$AWS_REGION" || true
 }
 
-delete_load_balancer
 stop_rds
 init_tf
 destroy_via_tf || true
@@ -148,4 +135,4 @@ else
   log "⚠️  Script de parada não encontrado em $AUTH_DIR. Verifique se o repositório foi clonado corretamente."
 fi
 
-log "✅ Ambiente pausado: LoadBalancer removido, RDS parado e EKS destruído."
+log "✅ Ambiente pausado (RDS parado, EKS destruído)."

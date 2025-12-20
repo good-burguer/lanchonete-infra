@@ -1,5 +1,10 @@
 #!/usr/bin/env bash
+
 set -euo pipefail
+
+# Logging and error functions (must be defined before first use)
+log() { printf "\n[resume] %s\n" "$*"; }
+die() { echo "[resume][erro] $*" >&2; exit 1; }
 
 # ====== Config (permite override por variável de ambiente) ======
 : "${AWS_REGION:=us-east-1}"
@@ -8,34 +13,153 @@ set -euo pipefail
 : "${TF_KEY:=infra/terraform.tfstate}"
 : "${EKS_NAME:=gb-dev-eks}"                 # fallback caso não haja output no state
 : "${EKS_NODEGROUP:=gb-dev-eks-ng}"         # nome padrão do nodegroup
-: "${APPLY_APP_MANIFESTS:=true}"           # se "true", aplica k8s/app/ após recriar o cluster
+: "${APPLY_APP_MANIFESTS:=true}"            # se "true", aplica k8s/ após recriar o cluster
 : "${K8S_NS_DIR:=../../k8s/namespace}"      # diretório com manifests de Namespace (aplicados sem -n)
-: "${K8S_APP_DIR:=../../k8s/app}"           # diretório com manifests da aplicação (aplicados com -n app)
+: "${K8S_APP_DIR:=../../k8s/app}"           # diretório com manifests do monolito (aplicados com -n app)
 : "${K8S_SYS_DIR:=../../k8s/kube-system}"   # diretório com manifests do kube-system (aplicados com -n kube-system)
 : "${ACCOUNT_ID:=$(aws sts get-caller-identity --query Account --output text 2>/dev/null || true)}"
- : "${APP_REPO:=lanchonete-app}"
 
-echo
-echo "[resume] Buscando última imagem disponível no ECR..."
+# Monolito (legacy) — por padrão NÃO usamos mais
+: "${APP_REPO:=lanchonete-app}"
+: "${USE_MONOLITH:=false}"                 # se "true", também aplica o monolito (lanchonete-app)
 
-APP_IMAGE_URI=$(aws ecr list-images \
-  --repository-name lanchonete-app \
-  --region us-east-1 \
-  --query 'imageIds[].imageTag' \
-  --output text | tr '\t' '\n' | grep -v None | grep -E '[a-f0-9]{6,}-amd64$' | tail -n1)
+# Se "true", aplica também pedidos/producao/pagamento/orchestrator
+: "${APPLY_ALL_SERVICES:=false}"
 
-if [ -z "$APP_IMAGE_URI" ]; then
-  echo "[resume] ❌ Nenhuma imagem válida encontrada no ECR. Abortando..."
-  exit 1
-fi
+# Diretórios (repos irmãos) com manifests de cada serviço
+# Objetivo: detectar automaticamente a raiz do workspace "good-burguer" (onde ficam lanchonete-infra, lanchonete-orchestrator, etc)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-APP_IMAGE_URI="822619186337.dkr.ecr.us-east-1.amazonaws.com/lanchonete-app:$APP_IMAGE_URI"
-echo
-echo "[resume] Imagem da aplicação (APP_IMAGE_URI): $APP_IMAGE_URI"
+detect_repo_root() {
+  local base="${SCRIPT_DIR}"
+  local candidate
 
-: "${LB_NAMESPACE:=app}"                 # namespace onde está o Service do LB
-: "${LB_SERVICE_NAME:=lanchonete-svc}"   # nome do Service (tipo LoadBalancer)
-: "${LB_WAIT_TIMEOUT:=300}"              # tempo máximo (segundos) para aparecer o endpoint
+  # Tentativas: subir 1..8 níveis e validar pela presença dos diretórios esperados
+  for up in 1 2 3 4 5 6 7 8; do
+    candidate="${base}"
+    for _ in $(seq 1 ${up}); do
+      candidate="$(cd "${candidate}/.." && pwd)"
+    done
+
+    # Critério: o root deve conter lanchonete-infra e lanchonete-orchestrator (bem estável no seu repo)
+    if [[ -d "${candidate}/lanchonete-infra" && -d "${candidate}/lanchonete-orchestrator" ]]; then
+      echo "${candidate}"
+      return 0
+    fi
+  done
+
+  # Fallback: 4 níveis acima (comportamento antigo)
+  echo "$(cd "${SCRIPT_DIR}/../../../.." && pwd)"
+}
+
+: "${REPO_ROOT:=$(detect_repo_root)}"
+log "REPO_ROOT detectado: ${REPO_ROOT}"
+
+# Esperado (no mesmo nível do lanchonete-infra): lanchonete-app-pedidos, lanchonete-producao, lanchonete-app-pagamento, lanchonete-orchestrator
+: "${PEDIDOS_DIR:=${REPO_ROOT}/lanchonete-app-pedidos}"
+: "${PRODUCAO_DIR:=${REPO_ROOT}/lanchonete-producao}"
+: "${PAGAMENTO_DIR:=${REPO_ROOT}/lanchonete-app-pagamento}"
+: "${ORCHESTRATOR_DIR:=${REPO_ROOT}/lanchonete-orchestrator}"
+
+# ECR repositories (um por serviço)
+: "${ECR_PEDIDOS_REPO:=lanchonete-app-pedidos}"
+: "${ECR_PRODUCAO_REPO:=lanchonete-app-producao}"
+: "${ECR_PAGAMENTO_REPO:=lanchonete-app-pagamento}"
+: "${ECR_ORCHESTRATOR_REPO:=lanchonete-orchestrator}"
+
+# Nomes dos deployments no K8s
+: "${DEPLOY_PEDIDOS:=lanchonete-pedidos}"
+: "${DEPLOY_PRODUCAO:=lanchonete-producao}"
+: "${DEPLOY_PAGAMENTO:=lanchonete-pagamento}"
+: "${DEPLOY_ORCHESTRATOR:=lanchonete-orchestrator}"
+
+# LoadBalancer do ambiente (idealmente no Orchestrator)
+: "${LB_NAMESPACE:=app}"                         # namespace onde está o Service do LB
+: "${LB_SERVICE_NAME:=lanchonete-orchestrator-lb}"   # nome do Service (tipo LoadBalancer)
+: "${LB_WAIT_TIMEOUT:=300}"                      # tempo máximo (segundos) para aparecer o endpoint
+
+
+ecr_latest_tag() {
+  # args: repo_name, optional regex filter
+  local repo="$1"; local regex="${2:-}"; local tag
+
+  tag=$(aws ecr describe-images \
+    --repository-name "${repo}" \
+    --region "${AWS_REGION}" \
+    --query 'reverse(sort_by(imageDetails[?imageTags], & imagePushedAt))[0].imageTags[0]' \
+    --output text 2>/dev/null | tr -d '\n\r')
+
+  if [[ -z "${tag}" || "${tag}" == "None" ]]; then
+    echo ""
+    return 0
+  fi
+
+  if [[ -n "${regex}" ]]; then
+    # se não bater no regex, tenta achar a primeira tag que bate
+    if ! echo "${tag}" | grep -Eq "${regex}"; then
+      tag=$(aws ecr list-images \
+        --repository-name "${repo}" \
+        --region "${AWS_REGION}" \
+        --query 'imageIds[].imageTag' \
+        --output text | tr '\t' '\n' | grep -v None | grep -E "${regex}" | tail -n1 || true)
+    fi
+  fi
+
+  echo "${tag}"
+}
+
+mk_image_uri() {
+  # args: repo_name, tag
+  local repo="$1"; local tag="$2"
+  echo "${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${repo}:${tag}"
+}
+
+deploy_k8s_dir() {
+  # args: svc_name, repo_dir, ecr_repo, deploy_name
+  local svc="$1"; local dir="$2"; local ecr_repo="$3"; local deploy_name="$4"
+  local k8s_dir="${dir}/k8s"
+
+  if [[ ! -d "${k8s_dir}" ]]; then
+    log "⚠️  ${svc}: diretório k8s não encontrado em ${k8s_dir} (pulando)."
+    return 0
+  fi
+
+  log "${svc}: buscando última imagem no ECR (${ecr_repo})…"
+  local tag
+  tag=$(ecr_latest_tag "${ecr_repo}" "[a-f0-9]{6,}(-amd64)?$")
+  if [[ -z "${tag}" ]]; then
+    log "❌ ${svc}: nenhuma tag válida encontrada no ECR (${ecr_repo})."
+    return 1
+  fi
+
+  local image_uri
+  image_uri=$(mk_image_uri "${ecr_repo}" "${tag}")
+  log "${svc}: usando imagem ${image_uri}"
+
+  # Deployment: preferencialmente deployment.yaml usando envsubst para IMAGE_URI
+  if [[ -f "${k8s_dir}/deployment.yaml" ]]; then
+    export IMAGE_URI="${image_uri}"
+    envsubst < "${k8s_dir}/deployment.yaml" | kubectl apply -n app -f -
+  else
+    log "⚠️  ${svc}: deployment.yaml não encontrado em ${k8s_dir} (pulando deployment)."
+  fi
+
+  # Service e demais manifests (exceto deployment.yaml)
+  if [[ -f "${k8s_dir}/service.yaml" ]]; then
+    kubectl apply -n app -f "${k8s_dir}/service.yaml"
+  elif [[ -f "${k8s_dir}/service.yml" ]]; then
+    kubectl apply -n app -f "${k8s_dir}/service.yml"
+  fi
+
+  find "${k8s_dir}" -type f \( -name '*.yaml' -o -name '*.yml' \) \
+    ! -name 'deployment.yaml' ! -name 'service.yaml' ! -name 'service.yml' -print0 | \
+    xargs -0 -I{} kubectl -n app apply -f {} || true
+
+  if kubectl -n app get deploy "${deploy_name}" >/dev/null 2>&1; then
+    log "${svc}: aguardando rollout de ${deploy_name}…"
+    kubectl -n app rollout status deploy "${deploy_name}" --timeout=180s || true
+  fi
+}
 
 get_lb_endpoint() {
   # tenta resolver hostname ou IP do LoadBalancer
@@ -51,9 +175,6 @@ get_lb_endpoint() {
   fi
   printf "%s" "$ep"
 }
-
-log() { printf "\n[resume] %s\n" "$*"; }
-die() { echo "[resume][erro] $*" >&2; exit 1; }
 
 # ====== 0) Terraform init (sempre reconfigure backend S3 + DynamoDB) ======
 log "Inicializando Terraform com backend S3 + DynamoDB…"
@@ -110,7 +231,7 @@ DB_STATUS="$(aws rds describe-db-instances \
   --region "${AWS_REGION}" \
   --query 'DBInstances[0].DBInstanceStatus' --output text 2>/dev/null || echo 'unknown')"
 
-case "$DB_STATUS" in
+case "${DB_STATUS}" in
   stopped)
     log "RDS está 'stopped'. Iniciando instância…"
     aws rds start-db-instance \
@@ -129,7 +250,7 @@ case "$DB_STATUS" in
     ;;
 esac
 
-# ====== 5) (Opcional) Aplicar manifests da aplicação ======
+# ====== 5) (Opcional) Aplicar manifests ======
 if [[ "${APPLY_APP_MANIFESTS}" == "true" ]]; then
   # 5.1) Namespace(s) (sem -n)
   if [[ -d "${K8S_NS_DIR}" ]]; then
@@ -140,80 +261,72 @@ if [[ "${APPLY_APP_MANIFESTS}" == "true" ]]; then
     kubectl get ns app >/dev/null 2>&1 || kubectl create namespace app
   fi
 
-  # 5.2) App (com -n app)
-  if [[ -d "${K8S_APP_DIR}" ]]; then
+  # 5.2) (Opcional) Monolito (com -n app)
+  APP_TAG=""
+  APP_IMAGE_URI=""
 
-    [ -z "${APP_IMAGE_URI}" ] && {
-      echo "[resume] Buscando imagem mais recente no ECR para o repositório lanchonete-app..."
-      IMAGE_TAG=$(aws ecr describe-images \
-        --repository-name lanchonete-app \
-        --query 'sort_by(imageDetails,& imagePushedAt)[-1].imageTags[0]' \
-        --output text)
+  if [[ "${USE_MONOLITH}" == "true" ]]; then
+    log "Buscando última imagem disponível no ECR para o monolito (${APP_REPO})…"
+    APP_TAG=$(ecr_latest_tag "${APP_REPO}" "[a-f0-9]{6,}-amd64$")
 
-      if [[ -z "$IMAGE_TAG" || "$IMAGE_TAG" == "None" ]]; then
-        echo "[resume] ❌ Nenhuma imagem com tag encontrada no repositório lanchonete-app. Abortando."
-        exit 1
-      fi
-
-      APP_IMAGE_URI="822619186337.dkr.ecr.us-east-1.amazonaws.com/lanchonete-app:${IMAGE_TAG}"
-      echo "[resume] Usando imagem mais recente disponível: $APP_IMAGE_URI"
-    }
-    export APP_IMAGE_URI
-
-    log "Aplicando manifests da aplicação em ${K8S_APP_DIR} (namespace app)…"
-    # 5.2.0) Validar imagem no ECR (auto-fallback para a última válida)
-    # Se APP_IMAGE_URI não existir no ECR, pega a última imagem válida e usa no deploy
-    repo_path="${APP_IMAGE_URI%:*}"            # ex: 8226....amazonaws.com/lanchonete-app
-    repo_name="${repo_path##*/}"               # ex: lanchonete-app
-    tag="${APP_IMAGE_URI##*:}"                 # ex: abc123-amd64
-
-    if ! aws ecr describe-images \
-          --repository-name "${repo_name}" \
-          --image-ids imageTag="${tag}" \
-          --region "${AWS_REGION}" >/dev/null 2>&1; then
-      echo "[resume] Imagem não encontrada no ECR: ${APP_IMAGE_URI}. Buscando última tag válida…"
-
-      # Buscar a imagem mais recente com tag válida
-      LATEST_TAG=$(aws ecr describe-images \
-        --repository-name "${repo_name}" \
-        --region "${AWS_REGION}" \
-        --query 'reverse(sort_by(imageDetails[?imageTags], & imagePushedAt))[0].imageTags[0]' \
-        --output text 2>/dev/null | tr -d '\n\r')
-
-      if [[ -z "$LATEST_TAG" || "$LATEST_TAG" == "None" ]]; then
-        echo "[resume] ❌ Nenhuma imagem com tag válida encontrada no repositório ${repo_name}. Abortando."
-        exit 1
-      fi
-
-      APP_IMAGE_URI="${repo_path}:${LATEST_TAG}"
-      echo "[resume] Usando fallback para a imagem mais recente do ECR: ${APP_IMAGE_URI}"
+    if [[ -z "${APP_TAG}" ]]; then
+      die "Nenhuma imagem válida encontrada no ECR para o monolito (${APP_REPO})."
     fi
 
-    # 5.2.1) Renderiza e aplica o Deployment com a imagem parametrizada
-    if [[ -f "${K8S_APP_DIR}/deployment.yaml" ]]; then
-      log "Renderizando deployment com APP_IMAGE_URI=${APP_IMAGE_URI}…"
-      cp "${K8S_APP_DIR}/deployment.yaml" ./deployment.temp.yaml
-      APP_IMAGE_URI="${APP_IMAGE_URI}" yq e '.spec.template.spec.containers[0].image = strenv(APP_IMAGE_URI)' -i ./deployment.temp.yaml
-      kubectl -n app apply -f ./deployment.temp.yaml
-      rm -f ./deployment.temp.yaml
+    APP_IMAGE_URI=$(mk_image_uri "${APP_REPO}" "${APP_TAG}")
+    log "Imagem do monolito (APP_IMAGE_URI): ${APP_IMAGE_URI}"
+
+    if [[ ! -d "${K8S_APP_DIR}" ]]; then
+      log "Diretório de monolito não encontrado: ${K8S_APP_DIR} (pulando monolito)."
     else
-      log "Arquivo deployment.yaml não encontrado em ${K8S_APP_DIR}."
-    fi
+      if [[ -z "${APP_IMAGE_URI}" ]]; then
+        die "USE_MONOLITH=true mas APP_IMAGE_URI está vazio. Verifique o ECR do monolito (${APP_REPO})."
+      fi
 
-    # 5.2.2) Aplica os demais manifests da aplicação (exceto o deployment, que já foi)
-    find "${K8S_APP_DIR}" -type f -name '*.yaml' ! -name 'deployment.yaml' -print0 | xargs -0 -I{} kubectl -n app apply -f {}
+      export APP_IMAGE_URI
 
-    # 5.2.3) Aguarda rollout do deployment (se existir)
-    if kubectl -n app get deploy lanchonete-app >/dev/null 2>&1; then
-      kubectl -n app rollout status deploy/lanchonete-app --timeout=60s || \
-        log "Rollout não completou em 60s. Verifique com 'kubectl -n app get pods' e 'kubectl -n app describe pod ...'."
-      kubectl -n app get deploy lanchonete-app -o=jsonpath='{.spec.template.spec.containers[0].image}{"\n"}' || true
+      log "Aplicando manifests do monolito em ${K8S_APP_DIR} (namespace app)…"
+
+      # Renderiza e aplica o Deployment com a imagem parametrizada (usa yq)
+      if [[ -f "${K8S_APP_DIR}/deployment.yaml" ]]; then
+        log "Renderizando deployment do monolito com APP_IMAGE_URI=${APP_IMAGE_URI}…"
+        cp "${K8S_APP_DIR}/deployment.yaml" ./deployment.temp.yaml
+        APP_IMAGE_URI="${APP_IMAGE_URI}" yq e '.spec.template.spec.containers[0].image = strenv(APP_IMAGE_URI)' -i ./deployment.temp.yaml
+        kubectl -n app apply -f ./deployment.temp.yaml
+        rm -f ./deployment.temp.yaml
+      else
+        log "Arquivo deployment.yaml não encontrado em ${K8S_APP_DIR}."
+      fi
+
+      # Aplica os demais manifests do monolito (exceto o deployment)
+      find "${K8S_APP_DIR}" -type f -name '*.yaml' ! -name 'deployment.yaml' -print0 | xargs -0 -I{} kubectl -n app apply -f {}
+
+      # Aguarda rollout do deployment (se existir)
+      if kubectl -n app get deploy lanchonete-app >/dev/null 2>&1; then
+        kubectl -n app rollout status deploy/lanchonete-app --timeout=60s || \
+          log "Rollout do monolito não completou em 60s. Verifique com 'kubectl -n app get pods' e 'kubectl -n app describe pod ...'."
+        kubectl -n app get deploy lanchonete-app -o=jsonpath='{.spec.template.spec.containers[0].image}{"\n"}' || true
+      fi
     fi
   else
-    log "Diretório de app não encontrado: ${K8S_APP_DIR} (pulando)."
+    log "USE_MONOLITH=false → pulando deploy do monolito (${APP_REPO})."
   fi
 
-  # 5.3) kube-system (com -n kube-system)
+  # 5.3) (Opcional) Serviços (multi-repo)
+  if [[ "${APPLY_ALL_SERVICES}" == "true" ]]; then
+    log "APPLY_ALL_SERVICES=true → aplicando pedidos/producao/pagamento/orchestrator…"
+
+    deploy_k8s_dir "pedidos" "${PEDIDOS_DIR}" "${ECR_PEDIDOS_REPO}" "${DEPLOY_PEDIDOS}"
+    deploy_k8s_dir "producao" "${PRODUCAO_DIR}" "${ECR_PRODUCAO_REPO}" "${DEPLOY_PRODUCAO}"
+    deploy_k8s_dir "pagamento" "${PAGAMENTO_DIR}" "${ECR_PAGAMENTO_REPO}" "${DEPLOY_PAGAMENTO}"
+    deploy_k8s_dir "orchestrator" "${ORCHESTRATOR_DIR}" "${ECR_ORCHESTRATOR_REPO}" "${DEPLOY_ORCHESTRATOR}"
+
+    log "✅ Serviços adicionais aplicados. Para checar: kubectl get deploy,svc,pods -n app"
+  else
+    log "APPLY_ALL_SERVICES=false → não aplicando serviços multi-repo."
+  fi
+
+  # 5.4) kube-system (com -n kube-system)
   if [[ -d "${K8S_SYS_DIR}" ]]; then
     log "Aplicando manifests do kube-system em ${K8S_SYS_DIR}…"
     # usar server-side para lidar com aws-auth e evitar conflitos de resourceVersion
@@ -222,10 +335,9 @@ if [[ "${APPLY_APP_MANIFESTS}" == "true" ]]; then
     log "Diretório kube-system não encontrado: ${K8S_SYS_DIR} (pulando)."
   fi
 
-  # 5.4) Descobrir e mostrar o endpoint externo do LoadBalancer (se existir)
+  # 5.5) Descobrir e mostrar o endpoint externo do LoadBalancer (se existir)
   log "Verificando endpoint do LoadBalancer (${LB_NAMESPACE}/${LB_SERVICE_NAME})…"
   if kubectl -n "${LB_NAMESPACE}" get svc "${LB_SERVICE_NAME}" >/dev/null 2>&1; then
-    # aguarda até LB expor hostname/IP ou até estourar timeout
     SECONDS=0
     LB_EP="$(get_lb_endpoint)"
     while [[ -z "${LB_EP}" && "${SECONDS}" -lt "${LB_WAIT_TIMEOUT}" ]]; do
@@ -259,15 +371,14 @@ kubectl get ns || true
 # ====== 7) Retomar ambiente do serviço de autenticação (lanchonete-auth) ======
 log "Chamando script de retomada no repositório de autenticação (lanchonete-auth)…"
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-AUTH_DIR="${SCRIPT_DIR}/../../../lanchonete-auth"
+AUTH_DIR="${REPO_ROOT}/lanchonete-auth"
 
-if [[ -d "$AUTH_DIR" && -f "$AUTH_DIR/resume.sh" ]]; then
+if [[ -d "${AUTH_DIR}" && -f "${AUTH_DIR}/resume.sh" ]]; then
   log "Executando resume.sh do repositório lanchonete-auth…"
-  (cd "$AUTH_DIR" && ./resume.sh)
+  (cd "${AUTH_DIR}" && ./resume.sh)
   log "✅ Script de retomada executado com sucesso."
 else
-  log "⚠️  Script de retomada não encontrado em $AUTH_DIR. Verifique se o repositório foi clonado corretamente."
+  log "⚠️  Script de retomada não encontrado em ${AUTH_DIR}. Verifique se o repositório foi clonado corretamente."
 fi
 
 log "✅ Ambiente retomado (EKS ativo, kubeconfig atualizado, RDS em operação)."
