@@ -1,4 +1,3 @@
-
 # Role do Cluster EKS
 data "aws_iam_policy_document" "eks_cluster_assume" {
   statement {
@@ -128,4 +127,30 @@ resource "aws_iam_openid_connect_provider" "eks" {
   client_id_list  = ["sts.amazonaws.com"]
   thumbprint_list = [data.tls_certificate.eks_oidc.certificates[0].sha1_fingerprint]
   depends_on      = [aws_eks_cluster.this]
+}
+
+# --- EKS Access: permite que o GitHub Actions (role gb-oidc-terraform) use kubectl no cluster ---
+# Obs: O workflow assume essa role via OIDC, mas o EKS só permite acesso após registrar a role como Access Entry.
+
+data "aws_iam_role" "gha_terraform" {
+  name = "gb-oidc-terraform"
+}
+
+resource "aws_eks_access_entry" "gha_terraform" {
+  cluster_name  = aws_eks_cluster.this.name
+  principal_arn = data.aws_iam_role.gha_terraform.arn
+
+  depends_on = [aws_eks_cluster.this]
+}
+
+resource "aws_eks_access_policy_association" "gha_terraform_admin" {
+  cluster_name  = aws_eks_cluster.this.name
+  principal_arn = data.aws_iam_role.gha_terraform.arn
+  policy_arn    = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
+
+  access_scope {
+    type = "cluster"
+  }
+
+  depends_on = [aws_eks_access_entry.gha_terraform]
 }
