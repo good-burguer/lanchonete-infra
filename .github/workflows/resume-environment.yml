@@ -12,6 +12,10 @@ jobs:
     name: Resume EKS + Services
     runs-on: ubuntu-latest
 
+    env:
+      AWS_REGION: us-east-1
+      GH_TOKEN: ${{ secrets.GH_ORCHESTRATOR_TOKEN }}
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -20,7 +24,7 @@ jobs:
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: arn:aws:iam::822619186337:role/gb-oidc-terraform
-          aws-region: us-east-1
+          aws-region: ${{ env.AWS_REGION }}
 
       - name: Install dependencies
         shell: bash
@@ -28,6 +32,14 @@ jobs:
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y jq unzip curl wget
+
+          # GitHub CLI (gh)
+          type -p curl >/dev/null || (sudo apt update && sudo apt install curl -y)
+          curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
+          sudo chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg
+          echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
+          sudo apt-get update
+          sudo apt-get install -y gh
 
           # Terraform
           curl -fsSL https://releases.hashicorp.com/terraform/1.8.5/terraform_1.8.5_linux_amd64.zip -o terraform.zip
@@ -46,6 +58,7 @@ jobs:
           terraform -v
           kubectl version --client=true
           yq --version
+          gh --version
 
       - name: Resume environment (Terraform + Kubernetes)
         shell: bash
@@ -53,4 +66,43 @@ jobs:
         run: |
           set -euo pipefail
           chmod +x resume.sh
-          APPLY_ALL_SERVICES=true ./resume.sh
+          APPLY_ALL_SERVICES=false ./resume.sh
+
+      - name: Trigger service deployments (other repos)
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Fail fast if token is missing
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "GH_TOKEN is empty. Configure secrets.GH_ORCHESTRATOR_TOKEN in this repo." >&2
+            exit 1
+          fi
+
+          ORG="good-burguer"
+          BRANCH="main"
+
+          # Helper: trigger and wait
+          trigger_and_wait() {
+            local repo="$1"
+            local workflow_file="$2"
+            echo "\n=== Trigger: ${ORG}/${repo} :: ${workflow_file} (ref=${BRANCH}) ==="
+
+            # Trigger
+            gh workflow run "${workflow_file}" -R "${ORG}/${repo}" -r "${BRANCH}"
+
+            # Wait for the newest run of that workflow on the branch
+            echo "Waiting for workflow run to complete..."
+            RUN_ID=$(gh run list -R "${ORG}/${repo}" --workflow "${workflow_file}" --branch "${BRANCH}" --limit 1 --json databaseId --jq '.[0].databaseId')
+            echo "Run id: ${RUN_ID}"
+            gh run watch "${RUN_ID}" -R "${ORG}/${repo}" --interval 10
+          }
+
+          # Deploy order (adjust if needed)
+          trigger_and_wait "lanchonete-auth" "deploy.yaml"
+          trigger_and_wait "lanchonete-app-pedidos" "cd-pedidos.yaml"
+          trigger_and_wait "lanchonete-producao" "cd-producao.yaml"
+          trigger_and_wait "lanchonete-app-pagamento" "cd-pagamento.yml"
+          trigger_and_wait "lanchonete-orchestrator" "cd-orchestrator.yml"
+
+          echo "\nAll service deployment workflows triggered (and watched)."
