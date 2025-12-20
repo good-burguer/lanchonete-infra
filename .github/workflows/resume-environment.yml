@@ -119,3 +119,34 @@ jobs:
 
           echo ""
           echo "All service deployment workflows triggered (and watched)."
+
+      - name: Show Test Endpoint (Load Balancer)
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SVC_NAME="lanchonete-orchestrator-lb"
+          NS="app"
+
+          echo "Waiting for LoadBalancer hostname for ${NS}/${SVC_NAME}..."
+          for i in $(seq 1 60); do
+            LB_HOST=$(kubectl get svc "$SVC_NAME" -n "$NS" -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || true)
+            if [ -n "${LB_HOST:-}" ]; then
+              break
+            fi
+            sleep 10
+          done
+
+          if [ -z "${LB_HOST:-}" ]; then
+            echo "❌ LoadBalancer endpoint not available yet for ${NS}/${SVC_NAME}." >&2
+            kubectl get svc -n "$NS" || true
+            exit 1
+          fi
+
+          echo "✅ Test endpoint: https://${LB_HOST}"
+
+          echo "## 🌐 Test Environment Endpoint" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "**HTTPS:** https://${LB_HOST}" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "_Use this URL to test the application._" >> "$GITHUB_STEP_SUMMARY"
