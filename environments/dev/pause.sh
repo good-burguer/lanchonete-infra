@@ -7,7 +7,7 @@ export AWS_REGION="${AWS_REGION:-us-east-1}"
 
 EKS_CLUSTER_NAME="${EKS_CLUSTER_NAME:-gb-dev-eks}"
 K8S_NAMESPACE="${K8S_NAMESPACE:-app}"
-LB_SERVICE_NAME="${LB_SERVICE_NAME:-lanchonete-svc}"
+LB_SERVICE_NAME="${LB_SERVICE_NAME:-lanchonete-orchestrator-lb}"
 
 TF_BUCKET="${TF_BUCKET:-good-burger-tf-state}"
 TF_LOCK_TABLE="${TF_LOCK_TABLE:-good-burger-tf-lock}"
