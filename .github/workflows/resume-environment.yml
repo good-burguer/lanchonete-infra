@@ -14,7 +14,6 @@ jobs:
 
     env:
       AWS_REGION: us-east-1
-      GH_TOKEN: ${{ secrets.GB_INFRA_ORCHESTRATOR }}
 
     steps:
       - name: Checkout repository
@@ -70,32 +69,45 @@ jobs:
 
       - name: Trigger service deployments (other repos)
         shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GB_INFRA_ORCHESTRATOR }}
         run: |
           set -euo pipefail
 
           # Fail fast if token is missing
           if [ -z "${GH_TOKEN:-}" ]; then
-            echo "GH_TOKEN is empty. Configure secrets.GH_ORCHESTRATOR_TOKEN in this repo." >&2
+            echo "GH_TOKEN is empty. Configure secrets.GB_INFRA_ORCHESTRATOR in this repo." >&2
             exit 1
           fi
 
           ORG="good-burguer"
           BRANCH="main"
 
+          # Optional sanity check (won't print the token)
+          gh auth status -h github.com || true
+
           # Helper: trigger and wait
           trigger_and_wait() {
             local repo="$1"
             local workflow_file="$2"
-            echo "\n=== Trigger: ${ORG}/${repo} :: ${workflow_file} (ref=${BRANCH}) ==="
+
+            printf "\n=== Trigger: %s/%s :: %s (ref=%s) ===\n" "$ORG" "$repo" "$workflow_file" "$BRANCH"
 
             # Trigger
-            gh workflow run "${workflow_file}" -R "${ORG}/${repo}" -r "${BRANCH}"
+            gh workflow run "$workflow_file" -R "$ORG/$repo" -r "$BRANCH"
 
             # Wait for the newest run of that workflow on the branch
             echo "Waiting for workflow run to complete..."
-            RUN_ID=$(gh run list -R "${ORG}/${repo}" --workflow "${workflow_file}" --branch "${BRANCH}" --limit 1 --json databaseId --jq '.[0].databaseId')
+            RUN_ID=$(gh run list -R "$ORG/$repo" --workflow "$workflow_file" --branch "$BRANCH" --limit 1 --json databaseId --jq '.[0].databaseId')
+
+            if [ -z "${RUN_ID:-}" ] || [ "$RUN_ID" = "null" ]; then
+              echo "Could not find a workflow run for $ORG/$repo ($workflow_file) on branch $BRANCH." >&2
+              echo "Tip: confirm the workflow filename and that it has workflow_dispatch enabled." >&2
+              exit 1
+            fi
+
             echo "Run id: ${RUN_ID}"
-            gh run watch "${RUN_ID}" -R "${ORG}/${repo}" --interval 10
+            gh run watch "$RUN_ID" -R "$ORG/$repo" --interval 10
           }
 
           # Deploy order (adjust if needed)
@@ -105,4 +117,5 @@ jobs:
           trigger_and_wait "lanchonete-app-pagamento" "cd-pagamento.yml"
           trigger_and_wait "lanchonete-orchestrator" "cd-orchestrator.yml"
 
-          echo "\nAll service deployment workflows triggered (and watched)."
+          echo ""
+          echo "All service deployment workflows triggered (and watched)."
