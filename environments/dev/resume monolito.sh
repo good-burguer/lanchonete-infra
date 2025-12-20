@@ -13,121 +13,23 @@ set -euo pipefail
 : "${K8S_APP_DIR:=../../k8s/app}"           # diretório com manifests da aplicação (aplicados com -n app)
 : "${K8S_SYS_DIR:=../../k8s/kube-system}"   # diretório com manifests do kube-system (aplicados com -n kube-system)
 : "${ACCOUNT_ID:=$(aws sts get-caller-identity --query Account --output text 2>/dev/null || true)}"
-: "${APP_REPO:=lanchonete-app}"
-
-: "${APPLY_ALL_SERVICES:=false}"         # se "true", aplica também pedidos/producao/pagamento/orchestrator
-
-# Diretórios (repos irmãos) com manifests de cada serviço
-: "${REPO_ROOT:=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)}"
-: "${PEDIDOS_DIR:=${REPO_ROOT}/lanchonete-pedidos}"
-: "${PRODUCAO_DIR:=${REPO_ROOT}/lanchonete-producao}"
-: "${PAGAMENTO_DIR:=${REPO_ROOT}/lanchonete-pagamento}"
-: "${ORCHESTRATOR_DIR:=${REPO_ROOT}/lanchonete-orchestrator}"
-
-# ECR repositories (um por serviço)
-: "${ECR_PEDIDOS_REPO:=lanchonete-app-pedidos}"
-: "${ECR_PRODUCAO_REPO:=lanchonete-app-producao}"
-: "${ECR_PAGAMENTO_REPO:=lanchonete-app-pagamento}"
-: "${ECR_ORCHESTRATOR_REPO:=lanchonete-app-orchestrator}"
-
-# Nomes dos deployments no K8s
-: "${DEPLOY_PEDIDOS:=lanchonete-pedidos}"
-: "${DEPLOY_PRODUCAO:=lanchonete-producao}"
-: "${DEPLOY_PAGAMENTO:=lanchonete-pagamento}"
-: "${DEPLOY_ORCHESTRATOR:=lanchonete-orchestrator}"
+ : "${APP_REPO:=lanchonete-app}"
 
 echo
+echo "[resume] Buscando última imagem disponível no ECR..."
 
-ecr_latest_tag() {
-  # args: repo_name, optional regex filter
-  local repo="$1"; local regex="${2:-}"; local tag
-  tag=$(aws ecr describe-images \
-    --repository-name "${repo}" \
-    --region "${AWS_REGION}" \
-    --query 'reverse(sort_by(imageDetails[?imageTags], & imagePushedAt))[0].imageTags[0]' \
-    --output text 2>/dev/null | tr -d '\n\r')
+APP_IMAGE_URI=$(aws ecr list-images \
+  --repository-name lanchonete-app \
+  --region us-east-1 \
+  --query 'imageIds[].imageTag' \
+  --output text | tr '\t' '\n' | grep -v None | grep -E '[a-f0-9]{6,}-amd64$' | tail -n1)
 
-  if [[ -z "${tag}" || "${tag}" == "None" ]]; then
-    echo ""
-    return 0
-  fi
-
-  if [[ -n "${regex}" ]]; then
-    # se não bater no regex, tenta achar a primeira tag que bata
-    if ! echo "${tag}" | grep -Eq "${regex}"; then
-      tag=$(aws ecr list-images \
-        --repository-name "${repo}" \
-        --region "${AWS_REGION}" \
-        --query 'imageIds[].imageTag' \
-        --output text | tr '\t' '\n' | grep -v None | grep -E "${regex}" | tail -n1 || true)
-    fi
-  fi
-
-  echo "${tag}"
-}
-
-mk_image_uri() {
-  # args: repo_name, tag
-  local repo="$1"; local tag="$2"
-  echo "${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${repo}:${tag}"
-}
-
-deploy_k8s_dir() {
-  # args: svc_name, repo_dir, ecr_repo, deploy_name
-  local svc="$1"; local dir="$2"; local ecr_repo="$3"; local deploy_name="$4"
-  local k8s_dir="${dir}/k8s"
-
-  if [[ ! -d "${k8s_dir}" ]]; then
-    log "⚠️  ${svc}: diretório k8s não encontrado em ${k8s_dir} (pulando)."
-    return 0
-  fi
-
-  log "${svc}: buscando última imagem no ECR (${ecr_repo})…"
-  local tag
-  tag=$(ecr_latest_tag "${ecr_repo}" "[a-f0-9]{6,}(-amd64)?$")
-  if [[ -z "${tag}" ]]; then
-    log "❌ ${svc}: nenhuma tag válida encontrada no ECR (${ecr_repo})."
-    return 1
-  fi
-
-  local image_uri
-  image_uri=$(mk_image_uri "${ecr_repo}" "${tag}")
-  log "${svc}: usando imagem ${image_uri}"
-
-  # Deployment: tenta deployment.yaml (preferencial) e faz envsubst para IMAGE_URI
-  if [[ -f "${k8s_dir}/deployment.yaml" ]]; then
-    export IMAGE_URI="${image_uri}"
-    envsubst < "${k8s_dir}/deployment.yaml" | kubectl apply -n app -f -
-  else
-    log "⚠️  ${svc}: deployment.yaml não encontrado em ${k8s_dir} (pulando deployment)."
-  fi
-
-  # Service e demais manifests (exceto deployment.yaml)
-  if [[ -f "${k8s_dir}/service.yaml" ]]; then
-    kubectl apply -n app -f "${k8s_dir}/service.yaml"
-  elif [[ -f "${k8s_dir}/service.yml" ]]; then
-    kubectl apply -n app -f "${k8s_dir}/service.yml"
-  fi
-
-  find "${k8s_dir}" -type f \( -name '*.yaml' -o -name '*.yml' \) ! -name 'deployment.yaml' ! -name 'service.yaml' ! -name 'service.yml' -print0 | \
-    xargs -0 -I{} kubectl -n app apply -f {} || true
-
-  if kubectl -n app get deploy "${deploy_name}" >/dev/null 2>&1; then
-    log "${svc}: aguardando rollout de ${deploy_name}…"
-    kubectl -n app rollout status deploy "${deploy_name}" --timeout=180s || true
-  fi
-}
-
-log "Buscando última imagem disponível no ECR para o monolito (${APP_REPO})…"
-APP_TAG=$(ecr_latest_tag "${APP_REPO}" "[a-f0-9]{6,}-amd64$")
-
-if [ -z "$APP_TAG" ]; then
+if [ -z "$APP_IMAGE_URI" ]; then
   echo "[resume] ❌ Nenhuma imagem válida encontrada no ECR. Abortando..."
   exit 1
 fi
 
-APP_IMAGE_URI=$(mk_image_uri "${APP_REPO}" "${APP_TAG}")
-
+APP_IMAGE_URI="822619186337.dkr.ecr.us-east-1.amazonaws.com/lanchonete-app:$APP_IMAGE_URI"
 echo
 echo "[resume] Imagem da aplicação (APP_IMAGE_URI): $APP_IMAGE_URI"
 
@@ -241,14 +143,29 @@ if [[ "${APPLY_APP_MANIFESTS}" == "true" ]]; then
   # 5.2) App (com -n app)
   if [[ -d "${K8S_APP_DIR}" ]]; then
 
+    [ -z "${APP_IMAGE_URI}" ] && {
+      echo "[resume] Buscando imagem mais recente no ECR para o repositório lanchonete-app..."
+      IMAGE_TAG=$(aws ecr describe-images \
+        --repository-name lanchonete-app \
+        --query 'sort_by(imageDetails,& imagePushedAt)[-1].imageTags[0]' \
+        --output text)
+
+      if [[ -z "$IMAGE_TAG" || "$IMAGE_TAG" == "None" ]]; then
+        echo "[resume] ❌ Nenhuma imagem com tag encontrada no repositório lanchonete-app. Abortando."
+        exit 1
+      fi
+
+      APP_IMAGE_URI="822619186337.dkr.ecr.us-east-1.amazonaws.com/lanchonete-app:${IMAGE_TAG}"
+      echo "[resume] Usando imagem mais recente disponível: $APP_IMAGE_URI"
+    }
     export APP_IMAGE_URI
 
     log "Aplicando manifests da aplicação em ${K8S_APP_DIR} (namespace app)…"
     # 5.2.0) Validar imagem no ECR (auto-fallback para a última válida)
     # Se APP_IMAGE_URI não existir no ECR, pega a última imagem válida e usa no deploy
-    repo_name="${APP_REPO}"                    # ex: lanchonete-app
-    tag="${APP_TAG}"                           # ex: abc123-amd64
-    repo_path="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${repo_name}"
+    repo_path="${APP_IMAGE_URI%:*}"            # ex: 8226....amazonaws.com/lanchonete-app
+    repo_name="${repo_path##*/}"               # ex: lanchonete-app
+    tag="${APP_IMAGE_URI##*:}"                 # ex: abc123-amd64
 
     if ! aws ecr describe-images \
           --repository-name "${repo_name}" \
@@ -268,7 +185,7 @@ if [[ "${APPLY_APP_MANIFESTS}" == "true" ]]; then
         exit 1
       fi
 
-      APP_IMAGE_URI="$(mk_image_uri "${repo_name}" "${LATEST_TAG}")"
+      APP_IMAGE_URI="${repo_path}:${LATEST_TAG}"
       echo "[resume] Usando fallback para a imagem mais recente do ECR: ${APP_IMAGE_URI}"
     fi
 
@@ -291,20 +208,6 @@ if [[ "${APPLY_APP_MANIFESTS}" == "true" ]]; then
       kubectl -n app rollout status deploy/lanchonete-app --timeout=60s || \
         log "Rollout não completou em 60s. Verifique com 'kubectl -n app get pods' e 'kubectl -n app describe pod ...'."
       kubectl -n app get deploy lanchonete-app -o=jsonpath='{.spec.template.spec.containers[0].image}{"\n"}' || true
-    fi
-
-    # 5.2.4) (Opcional) Aplicar manifests dos outros serviços (multi-repo)
-    if [[ "${APPLY_ALL_SERVICES}" == "true" ]]; then
-      log "APPLY_ALL_SERVICES=true → aplicando pedidos/producao/pagamento/orchestrator…"
-
-      deploy_k8s_dir "pedidos" "${PEDIDOS_DIR}" "${ECR_PEDIDOS_REPO}" "${DEPLOY_PEDIDOS}"
-      deploy_k8s_dir "producao" "${PRODUCAO_DIR}" "${ECR_PRODUCAO_REPO}" "${DEPLOY_PRODUCAO}"
-      deploy_k8s_dir "pagamento" "${PAGAMENTO_DIR}" "${ECR_PAGAMENTO_REPO}" "${DEPLOY_PAGAMENTO}"
-      deploy_k8s_dir "orchestrator" "${ORCHESTRATOR_DIR}" "${ECR_ORCHESTRATOR_REPO}" "${DEPLOY_ORCHESTRATOR}"
-
-      log "✅ Serviços adicionais aplicados. Para checar: kubectl get deploy,svc,pods -n app"
-    else
-      log "APPLY_ALL_SERVICES=false → mantendo apenas o monolito (lanchonete-app)."
     fi
   else
     log "Diretório de app não encontrado: ${K8S_APP_DIR} (pulando)."
