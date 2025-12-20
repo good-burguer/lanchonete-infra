@@ -19,9 +19,9 @@ die() { echo "[resume][erro] $*" >&2; exit 1; }
 : "${K8S_SYS_DIR:=../../k8s/kube-system}"   # diretório com manifests do kube-system (aplicados com -n kube-system)
 : "${ACCOUNT_ID:=$(aws sts get-caller-identity --query Account --output text 2>/dev/null || true)}"
 
-# Monolito (legacy) — por padrão NÃO usamos mais
-: "${APP_REPO:=lanchonete-app}"
-: "${USE_MONOLITH:=false}"                 # se "true", também aplica o monolito (lanchonete-app)
+# Monolito (legacy) — DESABILITADO (não aplicamos mais imagem/manifests do monolito por este script)
+: "${APP_REPO:=lanchonete-app}"            # mantido apenas por compatibilidade (não é usado)
+: "${USE_MONOLITH:=false}"                 # mantido apenas por compatibilidade (não é usado)
 
 # Se "true", aplica também pedidos/producao/pagamento/orchestrator
 : "${APPLY_ALL_SERVICES:=false}"
@@ -261,56 +261,10 @@ if [[ "${APPLY_APP_MANIFESTS}" == "true" ]]; then
     kubectl get ns app >/dev/null 2>&1 || kubectl create namespace app
   fi
 
-  # 5.2) (Opcional) Monolito (com -n app)
-  APP_TAG=""
-  APP_IMAGE_URI=""
-
-  if [[ "${USE_MONOLITH}" == "true" ]]; then
-    log "Buscando última imagem disponível no ECR para o monolito (${APP_REPO})…"
-    APP_TAG=$(ecr_latest_tag "${APP_REPO}" "[a-f0-9]{6,}-amd64$")
-
-    if [[ -z "${APP_TAG}" ]]; then
-      die "Nenhuma imagem válida encontrada no ECR para o monolito (${APP_REPO})."
-    fi
-
-    APP_IMAGE_URI=$(mk_image_uri "${APP_REPO}" "${APP_TAG}")
-    log "Imagem do monolito (APP_IMAGE_URI): ${APP_IMAGE_URI}"
-
-    if [[ ! -d "${K8S_APP_DIR}" ]]; then
-      log "Diretório de monolito não encontrado: ${K8S_APP_DIR} (pulando monolito)."
-    else
-      if [[ -z "${APP_IMAGE_URI}" ]]; then
-        die "USE_MONOLITH=true mas APP_IMAGE_URI está vazio. Verifique o ECR do monolito (${APP_REPO})."
-      fi
-
-      export APP_IMAGE_URI
-
-      log "Aplicando manifests do monolito em ${K8S_APP_DIR} (namespace app)…"
-
-      # Renderiza e aplica o Deployment com a imagem parametrizada (usa yq)
-      if [[ -f "${K8S_APP_DIR}/deployment.yaml" ]]; then
-        log "Renderizando deployment do monolito com APP_IMAGE_URI=${APP_IMAGE_URI}…"
-        cp "${K8S_APP_DIR}/deployment.yaml" ./deployment.temp.yaml
-        APP_IMAGE_URI="${APP_IMAGE_URI}" yq e '.spec.template.spec.containers[0].image = strenv(APP_IMAGE_URI)' -i ./deployment.temp.yaml
-        kubectl -n app apply -f ./deployment.temp.yaml
-        rm -f ./deployment.temp.yaml
-      else
-        log "Arquivo deployment.yaml não encontrado em ${K8S_APP_DIR}."
-      fi
-
-      # Aplica os demais manifests do monolito (exceto o deployment)
-      find "${K8S_APP_DIR}" -type f -name '*.yaml' ! -name 'deployment.yaml' -print0 | xargs -0 -I{} kubectl -n app apply -f {}
-
-      # Aguarda rollout do deployment (se existir)
-      if kubectl -n app get deploy lanchonete-app >/dev/null 2>&1; then
-        kubectl -n app rollout status deploy/lanchonete-app --timeout=60s || \
-          log "Rollout do monolito não completou em 60s. Verifique com 'kubectl -n app get pods' e 'kubectl -n app describe pod ...'."
-        kubectl -n app get deploy lanchonete-app -o=jsonpath='{.spec.template.spec.containers[0].image}{"\n"}' || true
-      fi
-    fi
-  else
-    log "USE_MONOLITH=false → pulando deploy do monolito (${APP_REPO})."
-  fi
+  # 5.2) Monolito (legacy) — DESABILITADO
+  # Observação: o monolito não é mais usado. Este script NÃO faz deploy de imagem/manifests do monolito.
+  # Se ainda existir algum recurso antigo no cluster, remova manualmente (ex.: `kubectl delete deploy lanchonete-app -n app`).
+  log "Monolito desabilitado → pulando deploy do monolito (lanchonete-app)."
 
   # 5.3) (Opcional) Serviços (multi-repo)
   if [[ "${APPLY_ALL_SERVICES}" == "true" ]]; then
