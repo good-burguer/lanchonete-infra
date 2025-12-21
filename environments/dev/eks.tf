@@ -74,6 +74,10 @@ resource "aws_eks_cluster" "this" {
     endpoint_public_access  = true # facilita kubectl no começo; podemos restringir depois
   }
 
+  # IMPORTANT: with `bootstrap_cluster_creator_admin_permissions = true`, EKS automatically creates
+  # an Access Entry for the cluster creator principal (i.e., the IAM role/user that created the cluster).
+  # Therefore, we must NOT manage an additional aws_eks_access_entry for the Terraform/GitHub Actions role,
+  # otherwise Terraform may fail with ResourceInUseException (409) due to duplicate Access Entry.
   access_config {
     authentication_mode                         = "API_AND_CONFIG_MAP"
     bootstrap_cluster_creator_admin_permissions = true
@@ -127,30 +131,4 @@ resource "aws_iam_openid_connect_provider" "eks" {
   client_id_list  = ["sts.amazonaws.com"]
   thumbprint_list = [data.tls_certificate.eks_oidc.certificates[0].sha1_fingerprint]
   depends_on      = [aws_eks_cluster.this]
-}
-
-# --- EKS Access: permite que o GitHub Actions (role gb-oidc-terraform) use kubectl no cluster ---
-# Obs: O workflow assume essa role via OIDC, mas o EKS só permite acesso após registrar a role como Access Entry.
-
-data "aws_iam_role" "gha_terraform" {
-  name = "gb-oidc-terraform"
-}
-
-resource "aws_eks_access_entry" "gha_terraform" {
-  cluster_name  = aws_eks_cluster.this.name
-  principal_arn = data.aws_iam_role.gha_terraform.arn
-
-  depends_on = [aws_eks_cluster.this]
-}
-
-resource "aws_eks_access_policy_association" "gha_terraform_admin" {
-  cluster_name  = aws_eks_cluster.this.name
-  principal_arn = data.aws_iam_role.gha_terraform.arn
-  policy_arn    = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
-
-  access_scope {
-    type = "cluster"
-  }
-
-  depends_on = [aws_eks_access_entry.gha_terraform]
 }
