@@ -67,6 +67,36 @@ jobs:
           chmod +x resume.sh
           APPLY_ALL_SERVICES=false ./resume.sh
 
+      - name: Export IRSA role for services
+        shell: bash
+        run: |
+          set -euo pipefail
+          # IRSA role used by application pods (must exist already)
+          IRSA_ROLE_ARN="arn:aws:iam::822619186337:role/gb-dev-eks-app-secrets"
+          echo "IRSA_ROLE_ARN=${IRSA_ROLE_ARN}" >> $GITHUB_ENV
+          echo "Using IRSA_ROLE_ARN=${IRSA_ROLE_ARN}"
+
+      - name: Wait for cluster readiness
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Checking cluster connectivity..."
+          kubectl version --short
+
+          echo "Waiting for nodes to be Ready..."
+          kubectl get nodes -o wide
+          kubectl wait --for=condition=Ready nodes --all --timeout=5m
+
+          echo "Ensuring namespace exists..."
+          kubectl get ns app || kubectl create ns app
+
+          echo "Applying baseline Kubernetes manifests (namespace/serviceaccount/irsa)..."
+          kubectl apply -f k8s/app/app-serviceaccount.yaml
+
+          echo "Verifying ServiceAccount annotation (IRSA)..."
+          kubectl get sa -n app lanchonete-app-sa -o yaml | egrep -n "role-arn|eks.amazonaws.com" || true
+
       - name: Trigger service deployments (other repos)
         shell: bash
         env:
@@ -154,4 +184,3 @@ jobs:
           echo "**HTTPS:** https://${LB_HOST}" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "_Use HTTP for now (HTTPS not configured in the application yet)._ " >> "$GITHUB_STEP_SUMMARY"
-          
