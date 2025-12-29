@@ -123,16 +123,30 @@ jobs:
 
             printf "\n=== Trigger: %s/%s :: %s (ref=%s) ===\n" "$ORG" "$repo" "$workflow_file" "$BRANCH"
 
+            # Capture a timestamp so we can watch the run we are about to trigger (and not an older one)
+            START_TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
             # Trigger
             gh workflow run "$workflow_file" -R "$ORG/$repo" -r "$BRANCH"
 
-            # Wait for the newest run of that workflow on the branch
+            # Give GitHub a moment to register the new run
+            sleep 5
+
             echo "Waiting for workflow run to complete..."
-            RUN_ID=$(gh run list -R "$ORG/$repo" --workflow "$workflow_file" --branch "$BRANCH" --limit 1 --json databaseId --jq '.[0].databaseId')
+
+            # Pick the newest workflow_dispatch run created after START_TS
+            RUN_ID=$(gh run list -R "$ORG/$repo" \
+              --workflow "$workflow_file" \
+              --branch "$BRANCH" \
+              --event workflow_dispatch \
+              --limit 20 \
+              --json databaseId,createdAt,status,conclusion \
+              --jq "map(select(.createdAt >= \"${START_TS}\")) | sort_by(.createdAt) | reverse | .[0].databaseId")
 
             if [ -z "${RUN_ID:-}" ] || [ "$RUN_ID" = "null" ]; then
-              echo "Could not find a workflow run for $ORG/$repo ($workflow_file) on branch $BRANCH." >&2
+              echo "Could not find the newly triggered workflow run for $ORG/$repo ($workflow_file) on branch $BRANCH." >&2
               echo "Tip: confirm the workflow filename and that it has workflow_dispatch enabled." >&2
+              echo "Also check if your token has Actions permissions to read runs/logs." >&2
               exit 1
             fi
 
